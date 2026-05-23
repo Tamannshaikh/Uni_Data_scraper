@@ -42,6 +42,16 @@ function pushRecent(item: RecentItem) {
   localStorage.setItem(RECENT_KEY, JSON.stringify(all));
 }
 
+function formatRelativeTime(ts: number) {
+  const diff = Math.max(0, Date.now() - ts);
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 function ScrapePage() {
   const [url, setUrl] = useState("");
   const [hint, setHint] = useState("");
