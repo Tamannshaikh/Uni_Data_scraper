@@ -2,7 +2,6 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ChevronDown } from "lucide-react";
 
 import { TopBar } from "@/components/TopBar";
 import { PrimaryButton } from "@/components/PrimaryButton";
@@ -20,53 +19,14 @@ export const Route = createFileRoute("/")({
   component: ScrapePage,
 });
 
-const RECENT_KEY = "uniscraper.recent";
-
-interface RecentItem {
-  id: string;
-  name: string;
-  ts: number;
-}
-
-function loadRecent(): RecentItem[] {
-  if (typeof window === "undefined") return [];
-  try {
-    return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
-  } catch {
-    return [];
-  }
-}
-
-function pushRecent(item: RecentItem) {
-  const all = [item, ...loadRecent().filter((r) => r.id !== item.id)].slice(0, 3);
-  localStorage.setItem(RECENT_KEY, JSON.stringify(all));
-}
-
-function formatRelativeTime(ts: number) {
-  const diff = Math.max(0, Date.now() - ts);
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
 function ScrapePage() {
   const [url, setUrl] = useState("");
   const [hint, setHint] = useState("");
-  const [batchOpen, setBatchOpen] = useState(false);
-  const [batchUrls, setBatchUrls] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
-  const [recent, setRecent] = useState<RecentItem[]>([]);
   const qc = useQueryClient();
   const navigate = useNavigate();
   const resultsRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    setRecent(loadRecent());
-  }, []);
 
   const startScrape = useMutation({
     mutationFn: (vars: { url: string; hint?: string }) =>
@@ -79,32 +39,25 @@ function ScrapePage() {
     onError: (e: Error) => toast.error(e.message || "Failed to start scrape"),
   });
 
-  const startBatch = useMutation({
-    mutationFn: (urls: string[]) => api.startBatch(urls),
-    onSuccess: (d) => toast.success(`Batch started — ${d.total} URLs queued`),
-    onError: (e: Error) => toast.error(e.message),
-  });
-
   const detail = useQuery({
     queryKey: ["scrape", activeId],
     queryFn: () => api.getScrape(activeId!),
     enabled: !!activeId,
     refetchInterval: (q) => {
       const s = (q.state.data as ScrapeRecord | undefined)?.status;
-      return s && s !== "processing" ? false : 2000;
+      const inProgress = !s || s === "processing" || s === "running";
+      return inProgress ? 2000 : false;
     },
   });
 
   useEffect(() => {
-    if (detail.data && detail.data.status !== "processing") {
-      const name = detail.data.university_name || detail.data.url || activeId || "Scrape";
-      pushRecent({ id: detail.data.scrape_id, name, ts: Date.now() });
-      setRecent(loadRecent());
-      qc.invalidateQueries({ queryKey: ["scrapes"] });
-      if (detail.data.status === "success") toast.success("Scrape complete");
-      else if (detail.data.status === "partial") toast.message("Partial extraction");
-      else toast.error("Scrape failed");
-    }
+    if (!detail.data) return;
+    const s = detail.data.status;
+    if (s === "processing" || s === "running") return;
+    qc.invalidateQueries({ queryKey: ["scrapes"] });
+    if (s === "success") toast.success("Scrape complete");
+    else if (s === "partial") toast.message("Partial extraction — some fields missing");
+    else toast.error("Scrape failed");
   }, [detail.data?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -116,20 +69,14 @@ function ScrapePage() {
     startScrape.mutate({ url: url.trim(), hint: hint.trim() || undefined });
   };
 
-  const handleBatch = () => {
-    const urls = batchUrls
-      .split("\n")
-      .map((u) => u.trim())
-      .filter(Boolean);
-    if (urls.length === 0) {
-      toast.error("Add at least one URL");
-      return;
-    }
-    startBatch.mutate(urls);
-  };
-
-  const isProcessing = !!activeId && detail.data?.status === "processing";
-  const isDone = detail.data && detail.data.status !== "processing";
+  const isProcessing = !!activeId && (
+    !detail.data ||
+    detail.data.status === "processing" ||
+    detail.data.status === "running"
+  );
+  const isDone = !!detail.data &&
+    detail.data.status !== "processing" &&
+    detail.data.status !== "running";
 
   return (
     <div className="page-in h-screen overflow-hidden flex flex-col">
@@ -178,7 +125,11 @@ function ScrapePage() {
                 onChange={(e) => setHint(e.target.value)}
                 placeholder="e.g. fees for international students"
                 className="w-full font-mono text-[13px] rounded-lg px-4 py-3 focus-glow"
-                style={{ background: "var(--bg-raised)", color: "var(--text-primary)", border: "1px solid transparent" }}
+                style={{
+                  background: "var(--bg-raised)",
+                  color: "var(--text-primary)",
+                  border: "1px solid transparent",
+                }}
               />
             </div>
 
@@ -190,86 +141,12 @@ function ScrapePage() {
               Scrape
             </PrimaryButton>
           </form>
-
-          <div style={{ borderTop: "1px solid var(--border)" }} className="pt-5">
-            <button
-              type="button"
-              onClick={() => setBatchOpen((v) => !v)}
-              className="font-ui uppercase text-[10px] tracking-widest-2 flex items-center gap-2 mb-3"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              <ChevronDown
-                size={12}
-                style={{
-                  transform: batchOpen ? "rotate(180deg)" : "rotate(0)",
-                  transition: "transform 200ms",
-                }}
-              />
-              Batch Mode
-            </button>
-            {batchOpen && (
-              <div className="flex flex-col gap-3">
-                <textarea
-                  value={batchUrls}
-                  onChange={(e) => setBatchUrls(e.target.value)}
-                  rows={5}
-                  placeholder={"https://uni-a.edu/program-1\nhttps://uni-b.edu/program-2"}
-                  className="w-full font-mono text-[13px] rounded-lg px-4 py-3 focus-glow resize-y"
-                  style={{
-                    background: "var(--bg-raised)",
-                    color: "var(--text-primary)",
-                    border: "1px solid transparent",
-                  }}
-                />
-                <PrimaryButton
-                  type="button"
-                  onClick={handleBatch}
-                  loading={startBatch.isPending}
-                  loadingText="QUEUING..."
-                >
-                  Scrape All
-                </PrimaryButton>
-              </div>
-            )}
-          </div>
-
-          <div className="mt-auto pt-8" style={{ borderTop: "1px solid var(--border)" }}>
-              <div
-                className="font-ui uppercase text-[9px] tracking-widest-2 mb-3"
-                style={{ color: "var(--text-muted)" }}
-              >
-                Recent
-              </div>
-              {recent.length > 0 ? (
-                <ul className="flex flex-col gap-1">
-                  {recent.slice(0, 3).map((r) => (
-                    <li key={r.id}>
-                      <button
-                        onClick={() => {
-                          setActiveId(r.id);
-                          setStartedAt(Date.now() - 16000);
-                        }}
-                        className="w-full text-left font-ui text-[12px] py-1.5 flex justify-between items-center transition-colors"
-                        style={{ color: "#8B8A97", cursor: "pointer" }}
-                      >
-                        <span className="truncate">{r.name}</span>
-                        <span className="ml-3 shrink-0">{formatRelativeTime(r.ts)}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="font-ui text-[12px]" style={{ color: "var(--text-muted)" }}>
-                  No scrapes yet
-                </div>
-              )}
-            </div>
         </section>
 
         {/* RIGHT — results */}
         <section
           ref={resultsRef}
-          className="relative p-10 grid-pattern flex-1 min-w-0"
+          className="relative p-10 grid-pattern flex-1 min-w-0 overflow-y-auto"
         >
           {!activeId && !isProcessing && !isDone && (
             <div className="flex flex-col items-center justify-center h-full text-center">

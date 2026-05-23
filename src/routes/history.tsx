@@ -45,7 +45,7 @@ function HistoryPage() {
     onError: () => toast.error("Delete failed"),
   });
 
-  const items = list.data?.items ?? [];
+  const items = list.data?.data ?? [];
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return items;
@@ -56,7 +56,7 @@ function HistoryPage() {
     );
   }, [items, query]);
 
-  const totalPages = Math.max(1, Math.ceil((list.data?.total ?? 0) / 20));
+  const totalPages = Math.max(1, list.data?.pages ?? 1);
 
   return (
     <div className="page-in">
@@ -99,104 +99,141 @@ function HistoryPage() {
 
         {/* Table */}
         <div
-          className="rounded-xl overflow-hidden"
-          style={{ border: "1px solid var(--border)" }}
+          className="rounded-xl"
+          style={{ border: "1px solid var(--border)", overflow: "hidden" }}
         >
-          <div
-            className="grid grid-cols-[2fr_2fr_0.8fr_0.8fr_1fr_0.6fr] gap-4 px-6 py-3"
-            style={{ borderBottom: "1px solid var(--border)" }}
-          >
-            {["University", "Program", "Level", "Status", "Date", ""].map((h) => (
-              <div
-                key={h}
-                className="font-ui uppercase text-[10px] tracking-widest-2"
-                style={{ color: "var(--text-muted)" }}
-              >
-                {h}
-              </div>
-            ))}
-          </div>
+          <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "collapse" }}>
+            <colgroup>
+              <col style={{ width: "28%" }} />
+              <col style={{ width: "32%" }} />
+              <col style={{ width: "12%" }} />
+              <col style={{ width: "14%" }} />
+              <col style={{ width: "14%" }} />
+            </colgroup>
+            <thead>
+              <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                {["University", "Program", "Level", "Status", "Date"].map((h) => (
+                  <th
+                    key={h}
+                    className="font-ui uppercase text-[10px] tracking-widest-2"
+                    style={{
+                      color: "var(--text-muted)",
+                      padding: "12px 16px",
+                      textAlign: "left",
+                      fontWeight: 400,
+                    }}
+                  >
+                    {h}
+                  </th>
+                ))}
+                <th style={{ width: 80, padding: "12px 16px" }} />
+              </tr>
+            </thead>
+            <tbody>
+              {list.isLoading &&
+                Array.from({ length: 6 }).map((_, i) => (
+                  <tr key={i}>
+                    <td style={{ padding: "14px 16px" }}>
+                      <div className="shimmer" style={{ width: "80%", height: 16, borderRadius: 4 }} />
+                    </td>
+                    <td style={{ padding: "14px 16px" }}>
+                      <div className="shimmer" style={{ width: "75%", height: 14, borderRadius: 4 }} />
+                    </td>
+                    <td style={{ padding: "14px 16px" }}>
+                      <div className="shimmer" style={{ width: 52, height: 22, borderRadius: 999 }} />
+                    </td>
+                    <td style={{ padding: "14px 16px" }}>
+                      <div className="shimmer" style={{ width: 60, height: 22, borderRadius: 999 }} />
+                    </td>
+                    <td style={{ padding: "14px 16px" }}>
+                      <div className="shimmer" style={{ width: "80%", height: 14, borderRadius: 4 }} />
+                    </td>
+                    <td />
+                  </tr>
+                ))}
 
-          {list.isLoading && (
-            <div className="px-6 py-6">
-              {Array.from({ length: 6 }).map((_, i) => (
-                <div
-                  key={i}
-                  className="grid grid-cols-[2fr_2fr_0.8fr_0.8fr_1fr_0.6fr] gap-4 items-center"
-                  style={{ marginBottom: 16 }}
+              {!list.isLoading && filtered.length === 0 && (
+                <tr>
+                  <td colSpan={6} style={{ padding: "80px 24px", textAlign: "center" }}>
+                    <div
+                      className="font-display italic"
+                      style={{ fontSize: 22, color: "#4A4958" }}
+                    >
+                      No scrapes yet
+                    </div>
+                    <div
+                      className="font-ui uppercase"
+                      style={{
+                        fontSize: 11,
+                        letterSpacing: "0.12em",
+                        color: "#4A4958",
+                        marginTop: 8,
+                      }}
+                    >
+                      Run your first scrape to see results here
+                    </div>
+                  </td>
+                </tr>
+              )}
+
+              {filtered.map((row: ScrapeRecord, i) => (
+                <tr
+                  key={row.scrape_id}
+                  style={{ background: i % 2 === 0 ? "var(--bg-surface)" : "transparent", cursor: "default" }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-hover)")}
+                  onMouseLeave={(e) =>
+                    (e.currentTarget.style.background = i % 2 === 0 ? "var(--bg-surface)" : "transparent")
+                  }
                 >
-                  <div className="shimmer" style={{ width: 180, height: 16, borderRadius: 4 }} />
-                  <div className="shimmer" style={{ width: 140, height: 14, borderRadius: 4 }} />
-                  <div className="shimmer" style={{ width: 60, height: 22, borderRadius: 999 }} />
-                  <div className="shimmer" style={{ width: 70, height: 22, borderRadius: 999 }} />
-                  <div className="shimmer" style={{ width: 90, height: 14, borderRadius: 4 }} />
-                  <div />
-                </div>
+                  <td
+                    className="font-display text-[15px]"
+                    style={{ color: "var(--text-primary)", padding: "14px 16px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  >
+                    {row.university_name ? row.university_name : <NotFound />}
+                  </td>
+                  <td
+                    className="font-ui text-[12px]"
+                    style={{ color: "var(--text-secondary)", padding: "14px 16px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  >
+                    {row.program_name ? row.program_name : <NotFound />}
+                  </td>
+                  <td style={{ padding: "14px 16px" }}>
+                    {row.degree_level ? <Badge>{row.degree_level}</Badge> : <NotFound />}
+                  </td>
+                  <td style={{ padding: "14px 16px" }}>
+                    <StatusBadge status={row.status} />
+                  </td>
+                  <td
+                    className="font-mono text-[12px]"
+                    style={{ color: "var(--text-muted)", padding: "14px 16px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  >
+                    {row.created_at ? new Date(row.created_at).toLocaleString() : <NotFound />}
+                  </td>
+                  <td style={{ padding: "14px 16px" }}>
+                    <div className="flex items-center gap-3 justify-end">
+                      <button
+                        onClick={() => setDrawerId(row.scrape_id)}
+                        className="font-ui uppercase text-[10px] tracking-widest-2 hover:underline"
+                        style={{ color: "var(--accent)" }}
+                      >
+                        View →
+                      </button>
+                      <button
+                        onClick={() => del.mutate(row.scrape_id)}
+                        className="transition-colors"
+                        style={{ color: "var(--text-muted)" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.color = "var(--error)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.color = "var(--text-muted)")}
+                        aria-label="Delete"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
               ))}
-            </div>
-          )}
-
-          {!list.isLoading && filtered.length === 0 && (
-            <div className="py-20 text-center">
-              <div
-                className="font-display italic"
-                style={{ fontSize: 24, color: "#4A4958" }}
-              >
-                No scrapes yet
-              </div>
-              <div
-                className="font-ui mt-2"
-                style={{ fontSize: 12, color: "#4A4958" }}
-              >
-                Run your first scrape to see history here
-              </div>
-            </div>
-          )}
-
-          {filtered.map((row: ScrapeRecord, i) => (
-            <div
-              key={row.scrape_id}
-              className="grid grid-cols-[2fr_2fr_0.8fr_0.8fr_1fr_0.6fr] gap-4 px-6 py-4 items-center transition-colors"
-              style={{ background: i % 2 === 0 ? "var(--bg-surface)" : "transparent" }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-hover)")}
-              onMouseLeave={(e) =>
-                (e.currentTarget.style.background = i % 2 === 0 ? "var(--bg-surface)" : "transparent")
-              }
-            >
-              <div className="font-display text-[15px]" style={{ color: "var(--text-primary)" }}>
-                {row.university_name ? row.university_name : <NotFound />}
-              </div>
-              <div className="font-ui text-[12px]" style={{ color: "var(--text-secondary)" }}>
-                {row.program_name ? row.program_name : <NotFound />}
-              </div>
-              <div>{row.degree_level ? <Badge>{row.degree_level}</Badge> : <NotFound />}</div>
-              <div>
-                <StatusBadge status={row.status} />
-              </div>
-              <div className="font-mono text-[12px]" style={{ color: "var(--text-muted)" }}>
-                {row.created_at ? new Date(row.created_at).toLocaleString() : <NotFound />}
-              </div>
-              <div className="flex items-center gap-4 justify-end">
-                <button
-                  onClick={() => setDrawerId(row.scrape_id)}
-                  className="font-ui uppercase text-[10px] tracking-widest-2 hover:underline"
-                  style={{ color: "var(--accent)" }}
-                >
-                  View →
-                </button>
-                <button
-                  onClick={() => del.mutate(row.scrape_id)}
-                  className="transition-colors"
-                  style={{ color: "var(--text-muted)" }}
-                  onMouseEnter={(e) => (e.currentTarget.style.color = "var(--error)")}
-                  onMouseLeave={(e) => (e.currentTarget.style.color = "var(--text-muted)")}
-                  aria-label="Delete"
-                >
-                  <Trash2 size={13} />
-                </button>
-              </div>
-            </div>
-          ))}
+            </tbody>
+          </table>
         </div>
 
         {/* Pagination */}

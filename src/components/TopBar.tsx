@@ -24,8 +24,8 @@ export function TopBar({ title }: { title: string }) {
       }}
     >
       <h1
-        className="font-display italic leading-none"
-        style={{ fontSize: 22, color: "#F2EFE9" }}
+        className="font-display leading-none"
+        style={{ fontSize: 22, color: "#F2EFE9", fontStyle: "italic" }}
       >
         {title}
       </h1>

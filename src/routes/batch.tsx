@@ -1,12 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { useMutation, useQueries } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { X } from "lucide-react";
 
 import { TopBar } from "@/components/TopBar";
 import { PrimaryButton } from "@/components/PrimaryButton";
 import { api, type ScrapeRecord } from "@/lib/api";
-import { StatusBadge } from "@/components/ResultsCard";
+import { StatusBadge, ResultsCard } from "@/components/ResultsCard";
 
 export const Route = createFileRoute("/batch")({
   head: () => ({
@@ -18,31 +19,104 @@ export const Route = createFileRoute("/batch")({
   component: BatchPage,
 });
 
+// ── Detail drawer ─────────────────────────────────────────────────────────────
+
+function DetailDrawer({
+  scrapeId,
+  onClose,
+}: {
+  scrapeId: string;
+  onClose: () => void;
+}) {
+  const detail = useQuery({
+    queryKey: ["scrape", scrapeId],
+    queryFn: () => api.getScrape(scrapeId),
+  });
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        className="fixed inset-0 z-40"
+        style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
+        onClick={onClose}
+      />
+
+      {/* Panel */}
+      <div
+        className="fixed top-0 right-0 h-screen w-full max-w-[620px] z-50 overflow-y-auto slide-up"
+        style={{ background: "var(--bg-base)", borderLeft: "1px solid var(--border)" }}
+      >
+        {/* Header */}
+        <div
+          className="sticky top-0 z-10 px-6 py-4 flex items-center justify-between"
+          style={{ background: "var(--bg-base)", borderBottom: "1px solid var(--border)" }}
+        >
+          <div
+            className="font-ui uppercase text-[10px] tracking-widest-2"
+            style={{ color: "var(--text-muted)" }}
+          >
+            Scrape Detail
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-md transition-colors"
+            style={{ color: "var(--text-secondary)" }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "var(--accent)")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "var(--text-secondary)")}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="p-6">
+          {detail.isLoading && <div className="h-96 rounded shimmer" />}
+          {detail.data && <ResultsCard data={detail.data} />}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
+
 function BatchPage() {
   const [urlText, setUrlText] = useState("");
   const [ids, setIds] = useState<string[]>([]);
   const [urls, setUrls] = useState<string[]>([]);
+  const [drawerId, setDrawerId] = useState<string | null>(null);
+  const [queuing, setQueuing] = useState(false);
 
   const start = useMutation({
     mutationFn: (urls: string[]) => api.startBatch(urls),
+    onMutate: () => setQueuing(true),
     onSuccess: (data, vars) => {
       setIds(data.scrape_ids);
       setUrls(vars);
+      setDrawerId(null);
       toast.success(`Batch started — ${data.total} URLs`);
     },
     onError: (e: Error) => toast.error(e.message),
+    onSettled: () => setQueuing(false),
   });
 
   const queries = useQueries({
     queries: ids.map((id) => ({
       queryKey: ["scrape", id],
       queryFn: () => api.getScrape(id),
-      refetchInterval: (q: { state: { data?: ScrapeRecord } }) =>
-        q.state.data && q.state.data.status !== "processing" ? false : 3000,
+      refetchInterval: (q: { state: { data?: ScrapeRecord } }) => {
+        const s = q.state.data?.status;
+        const inProgress = !s || s === "processing" || s === "running";
+        return inProgress ? 3000 : false;
+      },
     })),
   });
 
-  const completed = queries.filter((q) => q.data && q.data.status !== "processing").length;
+  const completed = queries.filter((q) => {
+    const s = q.data?.status;
+    return s && s !== "processing" && s !== "running";
+  }).length;
   const total = ids.length;
   const allDone = total > 0 && completed === total;
 
@@ -74,8 +148,8 @@ function BatchPage() {
         d?.university_name ?? "",
         d?.program_name ?? "",
         d?.status ?? "pending",
-        d?.international_tuition ?? "",
-        d?.ielts ?? "",
+        d?.tuition_fees?.international ?? "",
+        d?.english_requirements?.ielts ?? "",
       ]
         .map((c) => `"${String(c).replace(/"/g, '""')}"`)
         .join(",");
@@ -92,6 +166,7 @@ function BatchPage() {
       <TopBar title="Batch Scrape" />
 
       <div className="px-10 py-8 max-w-[1100px]">
+        {/* URL input */}
         <div className="mb-3">
           <label
             className="font-ui uppercase text-[10px] tracking-widest-2 block mb-2"
@@ -119,14 +194,23 @@ function BatchPage() {
           <PrimaryButton
             type="button"
             onClick={handleRun}
-            loading={start.isPending}
+            loading={queuing}
             loadingText="QUEUING..."
           >
             Run Batch
           </PrimaryButton>
+          {queuing && (
+            <button
+              onClick={() => setQueuing(false)}
+              className="font-ui uppercase text-[10px] tracking-widest-2 mt-2 block"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Cancel
+            </button>
+          )}
         </div>
 
-        {/* Progress */}
+        {/* Progress bar */}
         {total > 0 && !allDone && (
           <div className="mt-10">
             <div
@@ -152,7 +236,7 @@ function BatchPage() {
           </div>
         )}
 
-        {/* Summary */}
+        {/* Summary stats */}
         {allDone && (
           <div className="mt-10">
             <div
@@ -171,69 +255,125 @@ function BatchPage() {
           </div>
         )}
 
-        {/* Live table */}
+        {/* Live results table */}
         {total > 0 && (
           <div
             className="mt-10 rounded-xl overflow-hidden"
             style={{ border: "1px solid var(--border)" }}
           >
-            <div
-              className="grid grid-cols-[3fr_1fr_3fr] gap-4 px-6 py-3"
-              style={{ borderBottom: "1px solid var(--border)" }}
-            >
-              {["URL", "Status", "Result Preview"].map((h) => (
-                <div
-                  key={h}
-                  className="font-ui uppercase text-[10px] tracking-widest-2"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  {h}
-                </div>
-              ))}
-            </div>
+            <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "collapse" }}>
+              <colgroup>
+                <col style={{ width: "38%" }} />
+                <col style={{ width: "14%" }} />
+                <col style={{ width: "36%" }} />
+                <col style={{ width: "12%" }} />
+              </colgroup>
+              <thead>
+                <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                  {["URL", "Status", "Result Preview", ""].map((h) => (
+                    <th
+                      key={h}
+                      className="font-ui uppercase text-[10px] tracking-widest-2"
+                      style={{
+                        color: "var(--text-muted)",
+                        padding: "12px 16px",
+                        textAlign: "left",
+                        fontWeight: 400,
+                      }}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {ids.map((id, i) => {
+                  const q = queries[i];
+                  const d = q.data;
+                  const status = d?.status ?? "processing";
+                  const inProgress = status === "processing" || status === "running";
+                  const isDone = !inProgress && !!d;
 
-            {ids.map((id, i) => {
-              const q = queries[i];
-              const d = q.data;
-              const status = d?.status ?? "processing";
-              const isProc = status === "processing";
-              return (
-                <div
-                  key={id}
-                  className="grid grid-cols-[3fr_1fr_3fr] gap-4 px-6 py-4 items-center"
-                  style={{ background: i % 2 === 0 ? "var(--bg-surface)" : "transparent" }}
-                >
-                  <div
-                    className="font-mono text-[12px] truncate"
-                    style={{ color: "var(--text-secondary)" }}
-                  >
-                    {urls[i]}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {isProc && (
-                      <span
-                        className="pulse-dot inline-block w-1.5 h-1.5 rounded-full"
-                        style={{ background: "var(--warning)" }}
-                      />
-                    )}
-                    <StatusBadge status={status} />
-                  </div>
-                  <div
-                    className="font-mono text-[12px] truncate"
-                    style={{ color: "var(--text-primary)" }}
-                  >
-                    {d?.university_name
-                      ? `${d.university_name} — ${d.program_name ?? "—"}`
-                      : isProc
-                        ? "Working..."
-                        : "—"}
-                  </div>
-                </div>
-              );
-            })}
+                  return (
+                    <tr
+                      key={id}
+                      style={{ background: i % 2 === 0 ? "var(--bg-surface)" : "transparent" }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-hover)")}
+                      onMouseLeave={(e) =>
+                        (e.currentTarget.style.background =
+                          i % 2 === 0 ? "var(--bg-surface)" : "transparent")
+                      }
+                    >
+                      {/* URL */}
+                      <td
+                        className="font-mono text-[12px]"
+                        style={{
+                          color: "var(--text-secondary)",
+                          padding: "14px 16px",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {urls[i]}
+                      </td>
+
+                      {/* Status */}
+                      <td style={{ padding: "14px 16px" }}>
+                        <div className="flex items-center gap-2">
+                          {inProgress && (
+                            <span
+                              className="pulse-dot inline-block w-1.5 h-1.5 rounded-full"
+                              style={{ background: "var(--warning)" }}
+                            />
+                          )}
+                          <StatusBadge status={status} />
+                        </div>
+                      </td>
+
+                      {/* Preview */}
+                      <td
+                        className="font-mono text-[12px]"
+                        style={{
+                          color: "var(--text-primary)",
+                          padding: "14px 16px",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {d?.university_name
+                          ? `${d.university_name} — ${d.program_name ?? "—"}`
+                          : inProgress
+                            ? "Working..."
+                            : "—"}
+                      </td>
+
+                      {/* View button */}
+                      <td style={{ padding: "14px 16px", textAlign: "right" }}>
+                        {isDone && (
+                          <button
+                            onClick={() => setDrawerId(id)}
+                            className="font-ui uppercase text-[10px] tracking-widest-2 hover:underline"
+                            style={{ color: "var(--accent)" }}
+                          >
+                            View →
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
+
+      {/* Detail drawer */}
+      {drawerId && (
+        <DetailDrawer scrapeId={drawerId} onClose={() => setDrawerId(null)} />
+      )}
     </div>
   );
 }

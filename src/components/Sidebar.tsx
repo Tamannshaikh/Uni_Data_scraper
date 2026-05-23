@@ -12,8 +12,8 @@ export function Sidebar() {
     <aside
       className="flex flex-col"
       style={{
-        width: 220,
-        minWidth: 220,
+        width: 240,
+        minWidth: 240,
         height: "100vh",
         position: "sticky",
         top: 0,
@@ -26,12 +26,12 @@ export function Sidebar() {
         <Link to="/" className="block">
           <div
             className="font-display italic leading-none"
-            style={{ fontSize: 32, color: "#F2EFE9" }}
+            style={{ fontSize: 42, color: "#F2EFE9", marginBottom: 8 }}
           >
             UNI
           </div>
           <div
-            className="font-ui uppercase mt-1"
+            className="font-ui uppercase"
             style={{ fontSize: 10, letterSpacing: "0.2em", color: "#4FFFB0" }}
           >
             Scraper

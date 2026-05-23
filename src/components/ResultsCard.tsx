@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Download, FileJson, Link as LinkIcon, ChevronDown } from "lucide-react";
-import { fmt, type ScrapeRecord, api } from "@/lib/api";
+import { fmt, getEnglish, getFees, type ScrapeRecord } from "@/lib/api";
 
 interface Field {
   label: string;
@@ -73,6 +73,11 @@ function Badge({
 export function ResultsCard({ data }: { data: ScrapeRecord }) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
 
+  // Flatten nested objects for display
+  const eng = getEnglish(data);
+  const fees = getFees(data);
+  const sources = data.source_urls ?? [];
+
   const sections: Section[] = useMemo(
     () => [
       {
@@ -93,19 +98,20 @@ export function ResultsCard({ data }: { data: ScrapeRecord }) {
       {
         title: "Language",
         fields: [
-          { label: "IELTS", value: data.ielts },
-          { label: "TOEFL", value: data.toefl },
-          { label: "PTE", value: data.pte },
-          { label: "Duolingo", value: data.duolingo },
-          { label: "Notes", value: data.language_notes },
+          { label: "IELTS", value: eng.ielts },
+          { label: "TOEFL", value: eng.toefl },
+          { label: "PTE", value: eng.pte },
+          { label: "Duolingo", value: eng.duolingo },
+          { label: "Notes", value: eng.notes },
         ],
       },
       {
         title: "Fees",
         fields: [
-          { label: "International tuition", value: data.international_tuition },
-          { label: "Domestic tuition", value: data.domestic_tuition },
-          { label: "Currency", value: data.currency },
+          { label: "International tuition", value: fees.international },
+          { label: "Domestic tuition", value: fees.domestic },
+          { label: "Currency", value: fees.currency },
+          { label: "Fee notes", value: fees.notes },
           { label: "Other fees", value: data.other_fees },
         ],
       },
@@ -113,7 +119,6 @@ export function ResultsCard({ data }: { data: ScrapeRecord }) {
         title: "Opportunities",
         fields: [
           { label: "Scholarships", value: data.scholarships },
-          { label: "Financial aid", value: data.financial_aid },
         ],
       },
       {
@@ -124,7 +129,7 @@ export function ResultsCard({ data }: { data: ScrapeRecord }) {
         ],
       },
     ],
-    [data],
+    [data, eng, fees],
   );
 
   const extractedCount = sections
@@ -156,7 +161,7 @@ export function ResultsCard({ data }: { data: ScrapeRecord }) {
 
   return (
     <div
-      className="slide-up rounded-xl overflow-hidden flex flex-col"
+      className="slide-up rounded-xl flex flex-col"
       style={{ background: "var(--bg-surface)", border: "1px solid var(--border)" }}
     >
       {/* Header */}
@@ -173,7 +178,7 @@ export function ResultsCard({ data }: { data: ScrapeRecord }) {
           </div>
           <div className="flex flex-wrap gap-2 mt-3">
             {!fmt(data.degree_level).missing && <Badge>{data.degree_level}</Badge>}
-            {!fmt(data.duration).missing && <Badge>{data.duration}</Badge>}
+            {!fmt(data.program_duration).missing && <Badge>{data.program_duration}</Badge>}
           </div>
         </div>
         <div
@@ -209,13 +214,13 @@ export function ResultsCard({ data }: { data: ScrapeRecord }) {
       </div>
 
       {/* Sources (expandable) */}
-      {sourcesOpen && data.sources && data.sources.length > 0 && (
+      {sourcesOpen && sources.length > 0 && (
         <div
           className="px-6 py-4 max-h-44 overflow-y-auto"
           style={{ borderTop: "1px solid var(--border)", background: "var(--bg-base)" }}
         >
           <ul className="space-y-1.5">
-            {data.sources.map((s) => (
+            {sources.map((s) => (
               <li key={s} className="flex items-center gap-2">
                 <LinkIcon size={11} style={{ color: "var(--text-muted)" }} />
                 <a
@@ -235,7 +240,7 @@ export function ResultsCard({ data }: { data: ScrapeRecord }) {
 
       {/* Bottom bar */}
       <div
-        className="sticky bottom-0 flex items-center justify-between px-6 py-4"
+        className="flex items-center justify-between px-6 py-4"
         style={{
           background: "var(--bg-surface)",
           borderTop: "1px solid var(--border)",
@@ -253,7 +258,7 @@ export function ResultsCard({ data }: { data: ScrapeRecord }) {
               transition: "transform 200ms",
             }}
           />
-          Sources ({data.sources?.length ?? 0})
+          Sources ({sources.length})
         </button>
         <div className="flex gap-2">
           <button
@@ -285,7 +290,4 @@ export function StatusBadge({ status }: { status: string }) {
   return <Badge tone={tone as "accent" | "warn" | "error"}>{status}</Badge>;
 }
 
-// Re-export so other files can use it
 export { Badge };
-// silence eslint unused import warning for api when not directly used here
-void api;
