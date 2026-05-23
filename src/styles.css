@@ -77,10 +77,16 @@
   }
   html,
   body {
+    height: 100%;
+    overflow: hidden;
     background-color: var(--bg-base);
     color: var(--text-primary);
     font-family: var(--font-ui);
     -webkit-font-smoothing: antialiased;
+  }
+
+  body > div {
+    height: 100%;
   }
 }
 
