@@ -117,9 +117,12 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   return (
     <QueryClientProvider client={queryClient}>
-      <div className="min-h-screen w-full" style={{ background: "var(--bg-base)" }}>
+      <div className="min-h-screen w-full flex" style={{ background: "var(--bg-base)" }}>
         <Sidebar />
-        <main className="md:ml-[220px] min-h-screen page-in" key={typeof window !== "undefined" ? window.location.pathname : "ssr"}>
+        <main
+          className="min-h-screen flex-1 min-w-0 page-in"
+          key={typeof window !== "undefined" ? window.location.pathname : "ssr"}
+        >
           <Outlet />
         </main>
         <Toaster
