@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -61,6 +61,7 @@ function ScrapePage() {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [recent, setRecent] = useState<RecentItem[]>([]);
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const resultsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -73,6 +74,7 @@ function ScrapePage() {
     onSuccess: (data) => {
       setActiveId(data.scrape_id);
       setStartedAt(Date.now());
+      navigate({ to: "/", replace: true });
     },
     onError: (e: Error) => toast.error(e.message || "Failed to start scrape"),
   });
