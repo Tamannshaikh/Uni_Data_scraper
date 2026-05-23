@@ -58,6 +58,10 @@ def normalize_url(url: str, base_url: str) -> str | None:
     if "#" in result:
         result = result.split("#")[0]
 
+    # Strip query parameters — they don't change page content for our purposes
+    if "?" in result:
+        result = result.split("?")[0]
+
     # Strip trailing slash (but keep bare domain intact)
     parsed = urlparse(result)
     if parsed.path not in ("", "/"):

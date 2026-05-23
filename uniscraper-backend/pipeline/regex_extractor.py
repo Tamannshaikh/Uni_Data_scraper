@@ -395,8 +395,8 @@ def apply_regex_fallbacks(result: dict, hints: dict, text: str) -> dict:
     # Fee currency fallback: if we have amounts but no currency
     if isinstance(fees, dict) and not fees.get("currency") and hints.get("fee_amounts"):
         for amount in hints["fee_amounts"]:
-            for symbol, code in [("£", "GBP"), ("€", "EUR"), ("$", "USD"),
-                                  ("CAD", "CAD"), ("AUD", "AUD"), ("SGD", "SGD")]:
+            for symbol, code in [("£", "GBP"), ("€", "EUR"), ("CAD", "CAD"),
+                                  ("AUD", "AUD"), ("SGD", "SGD"), ("$", "USD")]:
                 if symbol in amount:
                     fees["currency"] = code
                     result["tuition_fees"] = fees

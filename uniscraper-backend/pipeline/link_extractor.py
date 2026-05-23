@@ -18,9 +18,10 @@ def extract_relevant_links(html: str, base_url: str) -> list[str]:
     score each by admission-relevance keywords, and return the top N URLs.
 
     Returns a plain list of URL strings (not dicts) sorted by score descending.
+    Deduplicates by normalized lowercase URL (strips query params, trailing slashes).
     """
     soup = BeautifulSoup(html, "lxml")
-    seen: set[str] = set()
+    seen: set[str] = set()  # lowercase normalized keys for dedup
     scored: list[tuple[int, str]] = []  # (score, url)
 
     for a_tag in soup.find_all("a", href=True):
@@ -45,15 +46,16 @@ def extract_relevant_links(html: str, base_url: str) -> list[str]:
             continue
 
         # Skip self-links
-        base_stripped = base_url.rstrip("/")
-        norm_stripped = normalized.rstrip("/")
+        base_stripped = base_url.rstrip("/").lower()
+        norm_stripped = normalized.rstrip("/").lower()
         if norm_stripped == base_stripped:
             continue
 
-        # Deduplicate
-        if normalized in seen:
+        # Deduplicate — use lowercase key so /Page and /page are treated as one
+        dedup_key = norm_stripped
+        if dedup_key in seen:
             continue
-        seen.add(normalized)
+        seen.add(dedup_key)
 
         link_text = a_tag.get_text(strip=True)
         score = score_url_relevance(normalized, link_text)
@@ -65,7 +67,17 @@ def extract_relevant_links(html: str, base_url: str) -> list[str]:
     # Sort by score descending, take top N
     scored.sort(key=lambda x: x[0], reverse=True)
     top_n = settings.max_subpages
-    results = [url for _, url in scored[:top_n]]
+
+    # Final dedup pass — belt-and-suspenders in case any duplicates slipped through
+    final_seen: set[str] = set()
+    results: list[str] = []
+    for _, url in scored:
+        key = url.rstrip("/").lower()
+        if key not in final_seen:
+            final_seen.add(key)
+            results.append(url)
+        if len(results) >= top_n:
+            break
 
     logger.info(
         f"[link_extractor] found {len(results)} relevant links from {base_url} "
