@@ -25,6 +25,46 @@ function HistoryPage() {
   const [drawerId, setDrawerId] = useState<string | null>(null);
   const qc = useQueryClient();
 
+  const handleExportAllCsv = async (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(api.exportCsvUrl());
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const today = new Date().toISOString().split("T")[0];
+      a.download = `uniscraper_export_${today}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error("CSV Export failed");
+    }
+  };
+
+  const handleExportAllJson = async (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(api.exportJsonUrl());
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const today = new Date().toISOString().split("T")[0];
+      a.download = `uniscraper_export_${today}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error("JSON Export failed");
+    }
+  };
+
   const list = useQuery({
     queryKey: ["scrapes", page],
     queryFn: () => api.listScrapes(page, 20),
@@ -85,7 +125,7 @@ function HistoryPage() {
           <div className="flex gap-2">
             <a
               href={api.exportCsvUrl()}
-              download="uniscraper_export.csv"
+              onClick={handleExportAllCsv}
               className="font-ui uppercase text-[11px] tracking-widest-2 px-4 py-3 rounded-lg transition-all"
               style={{
                 border: "1px solid var(--accent)",
@@ -99,7 +139,7 @@ function HistoryPage() {
             </a>
             <a
               href={api.exportJsonUrl()}
-              download="uniscraper_export.json"
+              onClick={handleExportAllJson}
               className="font-ui uppercase text-[11px] tracking-widest-2 px-4 py-3 rounded-lg transition-all"
               style={{
                 border: "1px solid var(--accent)",
