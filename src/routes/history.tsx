@@ -8,6 +8,7 @@ import { TopBar } from "@/components/TopBar";
 import { api, type ScrapeRecord } from "@/lib/api";
 import { Badge, ResultsCard, StatusBadge } from "@/components/ResultsCard";
 import { NotFound } from "@/components/NotFound";
+import { formatToIST } from "@/lib/utils";
 
 export const Route = createFileRoute("/history")({
   head: () => ({
@@ -264,7 +265,7 @@ function HistoryPage() {
                     className="font-mono text-[12px]"
                     style={{ color: "var(--text-muted)", padding: "14px 16px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                   >
-                    {row.created_at ? new Date(row.created_at).toLocaleString() : <NotFound />}
+                    {row.created_at ? formatToIST(row.created_at) : <NotFound />}
                   </td>
                   <td style={{ padding: "14px 16px" }}>
                     <div className="flex items-center gap-3 justify-end">

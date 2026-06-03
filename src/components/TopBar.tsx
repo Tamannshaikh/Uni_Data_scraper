@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
+import { getCurrentIST } from "@/lib/utils";
 
 export function TopBar({ title }: { title: string }) {
   const [stamp, setStamp] = useState("");
   useEffect(() => {
-    const update = () =>
-      setStamp(new Date().toISOString().replace("T", " ").substring(0, 19) + " UTC");
+    const update = () => setStamp(getCurrentIST());
     update();
     const t = setInterval(update, 1000);
     return () => clearInterval(t);
