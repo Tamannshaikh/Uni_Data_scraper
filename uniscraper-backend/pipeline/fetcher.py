@@ -82,7 +82,7 @@ async def _fetch_with_httpx(url: str) -> dict:
         status_code = response.status_code
         word_count = _count_words(html)
         
-        # Check for Cloudflare protection
+        # Check for Cloudflare protection (even on 403/403 responses)
         if _is_cloudflare_protected(html, url):
             return {
                 "html": None,
@@ -91,6 +91,17 @@ async def _fetch_with_httpx(url: str) -> dict:
                 "final_url": final_url,
                 "word_count": 0,
                 "error": "Site is protected by Cloudflare or similar anti-bot protection",
+            }
+        
+        # Also check for 403/503 status codes which often indicate protection
+        if status_code in (403, 503):
+            return {
+                "html": html if word_count > 0 else None,
+                "method_used": "httpx",
+                "status_code": status_code,
+                "final_url": final_url,
+                "word_count": word_count,
+                "error": f"Access denied (HTTP {status_code}) - site may be blocking automated access",
             }
         
         return {
@@ -189,6 +200,13 @@ async def fetch_page(url: str) -> dict:
     try:
         httpx_result = await _fetch_with_httpx(url)
 
+        # If httpx detected protection or blocking, return immediately without trying Playwright
+        if httpx_result.get("error"):
+            error_msg = httpx_result["error"]
+            if "cloudflare" in error_msg.lower() or "anti-bot" in error_msg.lower() or "access denied" in error_msg.lower():
+                logger.error(f"[fetcher] {url} — {error_msg}")
+                return httpx_result
+
         # Accept the httpx result if it looks like real content
         if (
             httpx_result["status_code"] is not None
@@ -213,6 +231,12 @@ async def fetch_page(url: str) -> dict:
     # --- Attempt 2: Playwright ---
     try:
         pw_result = await _fetch_with_playwright(url)
+        
+        # If Playwright detected protection, return that error
+        if pw_result.get("error"):
+            logger.error(f"[fetcher] {url} — {pw_result['error']}")
+            return pw_result
+        
         logger.info(
             f"[fetcher] {url} — playwright, {pw_result['word_count']} words"
         )
