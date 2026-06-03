@@ -8,14 +8,25 @@ export function cn(...inputs: ClassValue[]) {
 /**
  * Convert UTC timestamp to IST (Indian Standard Time) format
  * @param timestamp - ISO string or Date object
- * @returns Formatted IST string (YYYY-MM-DD HH:mm:ss IST)
+ * @returns Formatted IST string (MMM DD, YYYY at HH:mm:ss IST)
  */
 export function formatToIST(timestamp: string | Date): string {
   const date = typeof timestamp === 'string' ? new Date(timestamp) : timestamp;
-  // IST is UTC+5:30
-  const istOffset = 5.5 * 60 * 60 * 1000; // 5.5 hours in milliseconds
-  const istDate = new Date(date.getTime() + istOffset);
-  return istDate.toISOString().replace("T", " ").substring(0, 19) + " IST";
+  
+  // Format using toLocaleString with Asia/Kolkata timezone
+  const options: Intl.DateTimeFormatOptions = {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  };
+  
+  const formatted = date.toLocaleString('en-US', options);
+  return formatted + ' IST';
 }
 
 /**
