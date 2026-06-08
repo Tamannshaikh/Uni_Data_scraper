@@ -43,3 +43,11 @@ package-lock.json
 # Backend — handled by uniscraper-backend/.gitignore
 # (venv, __pycache__, .env are excluded there)
 uniscraper-backend/tests/validation/results/toronto_mba.txt
+
+# Local python venvs
+uniscraper-backend/.venv-py311/
+uniscraper-backend/.venv-py311
+# Backend local env file
+uniscraper-backend/code.env
+# Installer script
+uniscraper-backend/get-pip.py
