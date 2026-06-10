@@ -45,6 +45,10 @@ def _is_cloudflare_protected(html: str, url: str = "") -> bool:
     if not html:
         return False
     
+    # Ensure html is a string
+    if not isinstance(html, str):
+        html = str(html)
+    
     html_lower = html.lower()
     
     # Common Cloudflare indicators
@@ -203,6 +207,9 @@ async def fetch_page(url: str) -> dict:
         # If httpx detected protection or blocking, return immediately without trying Playwright
         if httpx_result.get("error"):
             error_msg = httpx_result["error"]
+            # Ensure error_msg is a string before calling .lower()
+            if not isinstance(error_msg, str):
+                error_msg = str(error_msg)
             if "cloudflare" in error_msg.lower() or "anti-bot" in error_msg.lower() or "access denied" in error_msg.lower():
                 logger.error(f"[fetcher] {url} — {error_msg}")
                 return httpx_result

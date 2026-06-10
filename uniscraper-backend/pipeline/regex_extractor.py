@@ -183,12 +183,19 @@ def extract_regex_hints_from_sections(text: str, section_headers: list = None) -
     """
     hints: dict = {}
     
+    # Ensure text is a string
+    if not isinstance(text, str):
+        text = str(text) if text else ""
+    
     # If we have section headers, try to extract from program-specific sections first
     if section_headers:
         program_sections = []
         generic_sections = []
         
         for header in section_headers:
+            # Ensure header is a string
+            if not isinstance(header, str):
+                continue
             if any(term in header.lower() for term in ["program", "course", "admission", "requirement"]):
                 program_sections.append(header)
             else:

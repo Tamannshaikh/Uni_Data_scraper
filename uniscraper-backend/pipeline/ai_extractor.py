@@ -285,9 +285,18 @@ def calculate_page_relevance_score(page_data: dict, field_group: str) -> int:
     Calculate relevance score for a page based on field group.
     Uses page_type + URL + content keywords with proper negative weights.
     """
-    url = page_data.get("url", "").lower()
+    url = page_data.get("url", "")
+    url = url.lower() if isinstance(url, str) else ""
+    
     page_type = page_data.get("page_type", "other")
-    content = page_data.get("content", "").lower()
+    
+    content = page_data.get("content", "")
+    # Handle case where content might be a list (defensive programming)
+    if isinstance(content, list):
+        content = " ".join(str(item) for item in content)
+    elif not isinstance(content, str):
+        content = str(content) if content else ""
+    content = content.lower()
 
     score = 50  # base
 
