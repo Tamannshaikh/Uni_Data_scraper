@@ -63,12 +63,28 @@ _PROGRAM_EXCLUDE = [
 
 
 def _extract_markdown(result) -> str:
-    """Safely extract fit_markdown from a crawl result."""
+    """
+    Safely extract markdown from a crawl result.
+    
+    Crawl4AI markdown hierarchy:
+    - raw_markdown: Full unfiltered markdown (always populated)
+    - fit_markdown: Filtered markdown (only when using PruningContentFilter/BM25)
+    
+    For our use case, we want raw_markdown since we're not using content filters.
+    """
     if not result.markdown:
         return ""
-    if hasattr(result.markdown, "fit_markdown"):
-        return result.markdown.fit_markdown or ""
-    return str(result.markdown)
+    
+    # Try raw_markdown first (always available)
+    if hasattr(result.markdown, "raw_markdown") and result.markdown.raw_markdown:
+        return result.markdown.raw_markdown
+    
+    # Fallback to fit_markdown (only populated with filters)
+    if hasattr(result.markdown, "fit_markdown") and result.markdown.fit_markdown:
+        return result.markdown.fit_markdown
+    
+    # Last resort: convert to string
+    return str(result.markdown) if result.markdown else ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -99,6 +115,8 @@ async def fetch_single_page(url: str) -> dict:
         process_iframes=True,
         wait_until="networkidle",
         page_timeout=30000,
+        # Execute JavaScript to handle dynamic content
+        js_code="await new Promise(r => setTimeout(r, 2000));",  # Wait 2s for JS rendering
     )
 
     try:
@@ -181,6 +199,8 @@ async def deep_crawl_program_page(url: str, max_pages: int = 15) -> list[dict]:
         remove_overlay_elements=True,
         remove_consent_popups=True,
         process_iframes=True,
+        # Execute JavaScript to handle dynamic content and lazy loading
+        js_code="await new Promise(r => setTimeout(r, 3000));",  # Wait 3s for content to render
     )
 
     # ── Step 1: Fetch main page ──────────────────────────────────────────────
@@ -193,6 +213,16 @@ async def deep_crawl_program_page(url: str, max_pages: int = 15) -> list[dict]:
             return []
 
         logger.info(f"[tier1_crawl4ai] Main page fetch succeeded")
+        
+        # Debug: Check what markdown fields are available
+        if result.markdown:
+            logger.info(f"[tier1_crawl4ai] Markdown object type: {type(result.markdown)}")
+            logger.info(f"[tier1_crawl4ai] Markdown attributes: {dir(result.markdown)}")
+            if hasattr(result.markdown, "raw_markdown"):
+                logger.info(f"[tier1_crawl4ai] raw_markdown length: {len(result.markdown.raw_markdown or '')}")
+            if hasattr(result.markdown, "fit_markdown"):
+                logger.info(f"[tier1_crawl4ai] fit_markdown length: {len(result.markdown.fit_markdown or '')}")
+        
         markdown = _extract_markdown(result)
         logger.info(f"[tier1_crawl4ai] Extracted markdown length: {len(markdown)}")
         
