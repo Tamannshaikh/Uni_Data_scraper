@@ -166,8 +166,30 @@ async def analyze_missing_fields(
     missing_critical = []
     for field in CRITICAL_FIELDS:
         value = extracted_data.get(field)
-        if value is None or (isinstance(value, dict) and not any(value.values())):
+        
+        # Check if field is completely missing or empty
+        if value is None:
             missing_critical.append(field)
+            continue
+        
+        # For nested objects (english_requirements, tuition_fees), check critical sub-fields
+        if isinstance(value, dict):
+            if field == "english_requirements":
+                # Check if at least one test score is present (not just notes)
+                test_scores = [value.get("ielts"), value.get("toefl"), value.get("pte"), value.get("duolingo")]
+                if not any(test_scores):  # All test scores are None
+                    missing_critical.append(field)
+            
+            elif field == "tuition_fees":
+                # Check if at least one fee amount is present (not just notes)
+                fee_amounts = [value.get("domestic"), value.get("international")]
+                if not any(fee_amounts):  # Both fees are None
+                    missing_critical.append(field)
+            
+            else:
+                # For other dicts, check if all values are None
+                if not any(v for v in value.values() if v is not None):
+                    missing_critical.append(field)
     
     if not missing_critical:
         logger.info("[gap_analyzer] All critical fields present, no recrawl needed")
