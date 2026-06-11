@@ -167,17 +167,94 @@ async def run_scrape(scrape_id: str, url: str, context_hint: str = "") -> None:
 
         all_source_urls = [p["url"] for p in pages_data]
 
-        # ── STEP 6: LLM extraction ────────────────────────────────────────────
+        # ── STEP 6: LLM extraction (Pass 1) ───────────────────────────────
         # Tiers 1 & 2 return clean markdown — skip clean_html() inside ai_extractor
         content_format = "markdown" if tier_used in (1, 2) else "html"
 
-        logger.info(f"[orchestrator] {scrape_id} — starting extraction (format={content_format})")
+        logger.info(f"[orchestrator] {scrape_id} — starting extraction pass 1 (format={content_format})")
         extracted = await extract_fields(
             combined, final_url, context_hint, pages_data,
             content_format=content_format,
         )
 
         llm_model_used = extracted.pop("_model_used", method_used)
+        
+        # ── STEP 6.5: Gap Detection and Targeted Recrawl ──────────────────────
+        from pipeline.gap_analyzer import analyze_missing_fields, CRITICAL_FIELDS
+        from pipeline.targeted_recrawl import targeted_recrawl, check_existing_pages_for_content
+        
+        # Check if critical fields are missing
+        gap_analysis = await analyze_missing_fields(extracted, pages_data, final_url)
+        
+        if gap_analysis["needs_recrawl"]:
+            logger.info(
+                f"[orchestrator] {scrape_id} — gap detected, missing: "
+                f"{', '.join(gap_analysis['missing_fields'])}"
+            )
+            
+            # First, check if missing content is in already-fetched pages
+            found_in_existing = await check_existing_pages_for_content(
+                pages_data, gap_analysis["missing_fields"]
+            )
+            
+            if found_in_existing:
+                logger.info(
+                    f"[orchestrator] {scrape_id} — found content in existing pages: "
+                    f"{found_in_existing}"
+                )
+            
+            # Fetch additional pages suggested by gap analysis
+            new_pages = await targeted_recrawl(
+                final_url,
+                gap_analysis["suggested_page_types"],
+                pages_data,
+                max_new_pages=5,
+            )
+            
+            if new_pages:
+                logger.info(
+                    f"[orchestrator] {scrape_id} — fetched {len(new_pages)} additional pages"
+                )
+                
+                # Add new pages to pages_data
+                pages_data.extend(new_pages)
+                
+                # Add new content to text_parts for re-extraction
+                for page in new_pages:
+                    label = f"{page['url'].split('/')[-1]} ({page['page_type']})".upper()
+                    text_parts.append((label, page["content"]))
+                
+                # Recombine all text including new pages
+                combined = combine_texts(text_parts)
+                all_source_urls.extend([p["url"] for p in new_pages])
+                
+                # ── STEP 6.6: LLM extraction (Pass 2) ─────────────────────────
+                logger.info(
+                    f"[orchestrator] {scrape_id} — starting extraction pass 2 "
+                    f"with {len(new_pages)} additional pages"
+                )
+                
+                extracted = await extract_fields(
+                    combined, final_url, context_hint, pages_data,
+                    content_format=content_format,
+                )
+                
+                llm_model_used = extracted.pop("_model_used", method_used)
+                
+                logger.info(
+                    f"[orchestrator] {scrape_id} — pass 2 complete, "
+                    f"checking if gaps filled"
+                )
+            else:
+                logger.info(
+                    f"[orchestrator] {scrape_id} — no additional pages found, "
+                    f"proceeding with pass 1 results"
+                )
+        else:
+            logger.info(
+                f"[orchestrator] {scrape_id} — all critical fields present, "
+                f"skipping gap detection"
+            )
 
         # ── STEP 7: Build field_sources attribution ───────────────────────────
         from pipeline.ai_extractor import calculate_page_relevance_score

@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
 
 const STEPS = [
-  "Tier 1: Crawl4AI stealth fetch",
-  "Tier 2/3: Firecrawl or httpx fallback",
+  "Tier 1: Custom fetch (httpx + Playwright)",
+  "Tier 2/3: Firecrawl or Crawl4AI fallback",
   "Classifying page types",
   "Extracting PDFs",
   "Running AI extraction (Gemini)",

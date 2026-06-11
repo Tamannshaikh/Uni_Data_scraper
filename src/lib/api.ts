@@ -21,6 +21,7 @@ export interface TuitionFees {
   domestic?: string | null;
   international?: string | null;
   currency?: string | null;
+  breakdown?: string | null;
   notes?: string | null;
 }
 
@@ -160,6 +161,7 @@ export function getFees(record: ScrapeRecord) {
     domestic: f?.domestic ?? null,
     international: f?.international ?? null,
     currency: f?.currency ?? null,
+    breakdown: f?.breakdown ?? null,
     notes: f?.notes ?? null,
   };
 }

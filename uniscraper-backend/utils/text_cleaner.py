@@ -52,6 +52,13 @@ def clean_html(html: str) -> str:
     for btn in soup.find_all("button"):
         btn.replace_with(btn.get_text(separator=" "))
 
+    # ── Special handling for tables to preserve structure ────────────────────
+    # Convert tables to formatted text before general text extraction
+    # This helps LLMs understand cost breakdowns and data in tabular format
+    for table in soup.find_all("table"):
+        table_text = _table_to_text(table)
+        table.replace_with(f"\n\n{table_text}\n\n")
+
     content_el = None
     for selector in _CONTENT_SELECTORS:
         content_el = soup.select_one(selector)
@@ -60,6 +67,34 @@ def clean_html(html: str) -> str:
 
     raw_text = content_el.get_text(separator="\n") if content_el else soup.get_text(separator="\n")
     return clean_text_content(raw_text)
+
+
+def _table_to_text(table) -> str:
+    """
+    Convert HTML table to readable plain text format.
+    Preserves column structure with pipe separators.
+    
+    Example output:
+    | Tuition & Fees | Books | Room & Board | Total |
+    | 7,556 | 1,250 | 13,190 | 28,356 |
+    """
+    rows = []
+    
+    # Get all rows from thead and tbody
+    for row in table.find_all("tr"):
+        cells = []
+        for cell in row.find_all(["th", "td"]):
+            # Get cell text and clean it
+            cell_text = cell.get_text(separator=" ", strip=True)
+            # Collapse multiple spaces
+            cell_text = " ".join(cell_text.split())
+            cells.append(cell_text)
+        
+        if cells:  # Only add non-empty rows
+            # Join cells with pipe separator
+            rows.append("| " + " | ".join(cells) + " |")
+    
+    return "\n".join(rows) if rows else ""
 
 
 # ── Plain-text deep cleaner ───────────────────────────────────────────────────

@@ -2,9 +2,9 @@
 #
 # Master fetch orchestrator — three-tier waterfall.
 #
-# TIER 1 (Primary):    Crawl4AI  — stealth Playwright, fit_markdown
-# TIER 2 (Fallback 1): Firecrawl — hosted API, handles Cloudflare
-# TIER 3 (Fallback 2): Custom    — httpx → Playwright + clean_html (always works)
+# TIER 1 (Primary):    Custom    — httpx → Playwright fallback (fast, simple pages)
+# TIER 2 (Fallback 1): Firecrawl — hosted API, handles Cloudflare + JavaScript
+# TIER 3 (Fallback 2): Crawl4AI  — stealth Playwright with deep crawling (complex cases)
 #
 # Public functions:
 #   fetch_page_intelligent(url)          — single page, best tier available
@@ -35,34 +35,33 @@ async def fetch_page_intelligent(url: str) -> dict:
         "html":       str,        # raw HTML (may be empty for Firecrawl)
         "links":      list[str],  # internal links
         "word_count": int,
-        "method":     str,        # "crawl4ai" | "firecrawl" | "httpx" | "playwright"
+        "method":     str,        # "custom" | "firecrawl" | "crawl4ai"
         "tier":       int,        # 1, 2, or 3
         "url":        str,
         "error":      str | None,
     }
     """
 
-    # ── TIER 1: Crawl4AI ─────────────────────────────────────────────────────
-    if settings.crawl4ai_enabled:
-        logger.info(f"[intelligent_fetcher] {url} — trying Tier 1 (Crawl4AI)")
-        try:
-            from pipeline.tier1_crawl4ai import fetch_single_page
-            r = await fetch_single_page(url)
-            if r["markdown"] and r["word_count"] >= _MIN_WORDS:
-                logger.info(
-                    f"[intelligent_fetcher] {url} — Tier 1 SUCCESS ({r['word_count']} words)"
-                )
-                return {
-                    "content": r["markdown"], "html": r["html"],
-                    "links": r["links"], "word_count": r["word_count"],
-                    "method": "crawl4ai", "tier": 1, "url": url, "error": None,
-                }
-            logger.warning(
-                f"[intelligent_fetcher] {url} — Tier 1 insufficient "
-                f"({r['word_count']} words), trying Tier 2"
+    # ── TIER 1: Custom httpx + Playwright ────────────────────────────────────
+    logger.info(f"[intelligent_fetcher] {url} — trying Tier 1 (custom)")
+    try:
+        from pipeline.tier1_custom import fetch_single_page
+        r = await fetch_single_page(url)
+        if r["markdown"] and r["word_count"] >= _MIN_WORDS:
+            logger.info(
+                f"[intelligent_fetcher] {url} — Tier 1 SUCCESS ({r['word_count']} words)"
             )
-        except Exception as exc:
-            logger.error(f"[intelligent_fetcher] {url} — Tier 1 exception: {exc}, trying Tier 2")
+            return {
+                "content": r["markdown"], "html": r["html"],
+                "links": r["links"], "word_count": r["word_count"],
+                "method": "custom", "tier": 1, "url": url, "error": None,
+            }
+        logger.warning(
+            f"[intelligent_fetcher] {url} — Tier 1 insufficient "
+            f"({r['word_count']} words), trying Tier 2"
+        )
+    except Exception as exc:
+        logger.error(f"[intelligent_fetcher] {url} — Tier 1 exception: {exc}, trying Tier 2")
 
     # ── TIER 2: Firecrawl ─────────────────────────────────────────────────────
     if settings.firecrawl_enabled and settings.firecrawl_api_key:
@@ -86,36 +85,34 @@ async def fetch_page_intelligent(url: str) -> dict:
         except Exception as exc:
             logger.error(f"[intelligent_fetcher] {url} — Tier 2 exception: {exc}, trying Tier 3")
 
-    # ── TIER 3: Custom pipeline (guaranteed fallback) ─────────────────────────
-    logger.info(f"[intelligent_fetcher] {url} — trying Tier 3 (custom pipeline)")
-    try:
-        from pipeline.fetcher import fetch_page
-        from utils.text_cleaner import clean_html
-        from pipeline.link_extractor import extract_relevant_links
+    # ── TIER 3: Crawl4AI (deep crawling fallback) ────────────────────────────
+    if settings.crawl4ai_enabled:
+        logger.info(f"[intelligent_fetcher] {url} — trying Tier 3 (Crawl4AI)")
+        try:
+            from pipeline.tier3_crawl4ai import fetch_single_page
+            r = await fetch_single_page(url)
+            if r["markdown"] and r["word_count"] >= _MIN_WORDS:
+                logger.info(
+                    f"[intelligent_fetcher] {url} — Tier 3 SUCCESS ({r['word_count']} words)"
+                )
+                return {
+                    "content": r["markdown"], "html": r["html"],
+                    "links": r["links"], "word_count": r["word_count"],
+                    "method": "crawl4ai", "tier": 3, "url": url, "error": None,
+                }
+            logger.warning(
+                f"[intelligent_fetcher] {url} — Tier 3 insufficient "
+                f"({r['word_count']} words)"
+            )
+        except Exception as exc:
+            logger.error(f"[intelligent_fetcher] {url} — Tier 3 exception: {exc}")
 
-        fetch_result = await fetch_page(url)
-        html = fetch_result.get("html") or ""
-        cleaned = clean_html(html) if html else ""
-        links = extract_relevant_links(html, url) if html else []
-        word_count = len(cleaned.split())
-        method = fetch_result.get("method_used", "httpx")
-
-        logger.info(
-            f"[intelligent_fetcher] {url} — Tier 3 result: {word_count} words, "
-            f"method={method}"
-        )
-        return {
-            "content": cleaned, "html": html, "links": links,
-            "word_count": word_count, "method": method, "tier": 3,
-            "url": fetch_result.get("final_url", url),
-            "error": fetch_result.get("error"),
-        }
-    except Exception as exc:
-        logger.error(f"[intelligent_fetcher] {url} — Tier 3 also failed: {exc}")
-        return {
-            "content": "", "html": "", "links": [], "word_count": 0,
-            "method": "all_failed", "tier": 0, "url": url, "error": str(exc),
-        }
+    # ── All tiers failed ──────────────────────────────────────────────────────
+    logger.error(f"[intelligent_fetcher] {url} — all tiers failed")
+    return {
+        "content": "", "html": "", "links": [], "word_count": 0,
+        "method": "all_failed", "tier": 0, "url": url, "error": "All tiers failed",
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -134,66 +131,67 @@ async def fetch_subpages_intelligent(url: str, max_pages: int = 50) -> list[dict
     First item is the main page.
     """
 
-    # ── TIER 1: Crawl4AI exhaustive BFS crawl ─────────────────────────────────
-    if settings.crawl4ai_enabled:
-        try:
-            from pipeline.tier1_crawl4ai import deep_crawl_program_page, fetch_single_page
-            from utils.page_classifier import classify_page
-            
-            pages = await deep_crawl_program_page(url, max_pages)
-            
-            if not pages:
-                # Deep crawl returned nothing — try single page as Tier 1 minimum
-                logger.warning(
-                    f"[intelligent_fetcher] Tier 1 deep crawl returned no pages "
-                    f"— trying single fetch"
-                )
-                try:
-                    single = await fetch_single_page(url)
-                    if single.get("word_count", 0) >= _MIN_WORDS:
-                        pages = [{
-                            "url": url,
-                            "content": single.get("markdown", ""),
-                            "markdown": single.get("markdown", ""),
-                            "html": single.get("html", ""),
-                            "word_count": single["word_count"],
-                            "method": "crawl4ai",
-                            "tier": 1,
-                            "page_type": classify_page(url, single.get("markdown", "")),
-                            "depth": 0,
-                        }]
-                        logger.info(
-                            f"[intelligent_fetcher] Single fetch fallback succeeded "
-                            f"({pages[0]['word_count']} words)"
-                        )
-                except Exception as e:
-                    logger.warning(f"[intelligent_fetcher] Single fetch also failed: {e}")
-
-            # ── Tier 1 success: any valid main page is enough to proceed ─────
-            if len(pages) >= 1 and pages[0]["word_count"] >= _MIN_WORDS:
-                logger.info(
-                    f"[intelligent_fetcher] Tier 1 SUCCESS — "
-                    f"{len(pages)} pages (depths: {sorted(set(p.get('depth', 0) for p in pages))})"
-                )
-                return [
-                    {
-                        **p,
-                        "content": p.get("markdown", ""),
-                        "page_type": p.get("page_type", classify_page(p["url"], p.get("markdown", ""))),
-                    }
-                    for p in pages
-                ]
-                
-            reason = f"{pages[0]['word_count']} words" if pages else "no pages"
+    # ── TIER 1: Custom httpx + Playwright with BFS ───────────────────────────
+    logger.info(f"[intelligent_fetcher] subpages {url} — trying Tier 1 (custom)")
+    try:
+        from pipeline.tier1_custom import deep_crawl_program_page, fetch_single_page
+        from utils.page_classifier import classify_page
+        
+        pages = await deep_crawl_program_page(url, max_pages)
+        
+        if not pages:
+            # Deep crawl returned nothing — try single page as Tier 1 minimum
             logger.warning(
-                f"[intelligent_fetcher] subpages {url} — "
-                f"Tier 1 insufficient ({reason}), trying Tier 2"
+                f"[intelligent_fetcher] Tier 1 deep crawl returned no pages "
+                f"— trying single fetch"
             )
-        except Exception as exc:
-            logger.warning(f"[intelligent_fetcher] Tier 1 deep crawl failed: {exc}")
+            try:
+                single = await fetch_single_page(url)
+                if single.get("word_count", 0) >= _MIN_WORDS:
+                    pages = [{
+                        "url": url,
+                        "content": single.get("markdown", ""),
+                        "markdown": single.get("markdown", ""),
+                        "html": single.get("html", ""),
+                        "word_count": single["word_count"],
+                        "method": "custom",
+                        "tier": 1,
+                        "page_type": classify_page(url, single.get("markdown", "")),
+                        "depth": 0,
+                    }]
+                    logger.info(
+                        f"[intelligent_fetcher] Single fetch fallback succeeded "
+                        f"({pages[0]['word_count']} words)"
+                    )
+            except Exception as e:
+                logger.warning(f"[intelligent_fetcher] Single fetch also failed: {e}")
+
+        # ── Tier 1 success: any valid main page is enough to proceed ─────
+        if len(pages) >= 1 and pages[0]["word_count"] >= _MIN_WORDS:
+            logger.info(
+                f"[intelligent_fetcher] Tier 1 SUCCESS — "
+                f"{len(pages)} pages (depths: {sorted(set(p.get('depth', 0) for p in pages))})"
+            )
+            return [
+                {
+                    **p,
+                    "content": p.get("markdown", ""),
+                    "page_type": p.get("page_type", classify_page(p["url"], p.get("markdown", ""))),
+                }
+                for p in pages
+            ]
+            
+        reason = f"{pages[0]['word_count']} words" if pages else "no pages"
+        logger.warning(
+            f"[intelligent_fetcher] subpages {url} — "
+            f"Tier 1 insufficient ({reason}), trying Tier 2"
+        )
+    except Exception as exc:
+        logger.warning(f"[intelligent_fetcher] Tier 1 deep crawl failed: {exc}")
 
     # ── TIER 2: Firecrawl exhaustive crawl ────────────────────────────────────
     if settings.firecrawl_enabled and settings.firecrawl_api_key:
+        logger.info(f"[intelligent_fetcher] subpages {url} — trying Tier 2 (Firecrawl)")
         try:
             from pipeline.tier2_firecrawl import crawl_program_subpages
             from utils.page_classifier import classify_page
@@ -218,63 +216,58 @@ async def fetch_subpages_intelligent(url: str, max_pages: int = 50) -> list[dict
         except Exception as exc:
             logger.warning(f"[intelligent_fetcher] Tier 2 crawl failed: {exc}")
 
-    # ── TIER 3: Manual sub-page fetching ─────────────────────────────────────
-    logger.info(f"[intelligent_fetcher] subpages {url} — Tier 3 manual fetch")
-    try:
-        from pipeline.fetcher import fetch_page
-        from utils.text_cleaner import clean_html
-        from pipeline.link_extractor import extract_relevant_links
-        from utils.page_classifier import classify_page
+    # ── TIER 3: Crawl4AI deep crawling ───────────────────────────────────────
+    if settings.crawl4ai_enabled:
+        logger.info(f"[intelligent_fetcher] subpages {url} — trying Tier 3 (Crawl4AI)")
+        try:
+            from pipeline.tier3_crawl4ai import deep_crawl_program_page, fetch_single_page
+            from utils.page_classifier import classify_page
+            
+            pages = await deep_crawl_program_page(url, max_pages)
+            
+            if not pages:
+                # Try single page fallback
+                logger.warning(
+                    f"[intelligent_fetcher] Tier 3 deep crawl returned no pages "
+                    f"— trying single fetch"
+                )
+                try:
+                    single = await fetch_single_page(url)
+                    if single.get("word_count", 0) >= _MIN_WORDS:
+                        pages = [{
+                            "url": url,
+                            "content": single.get("markdown", ""),
+                            "markdown": single.get("markdown", ""),
+                            "html": single.get("html", ""),
+                            "word_count": single["word_count"],
+                            "method": "crawl4ai",
+                            "tier": 3,
+                            "page_type": classify_page(url, single.get("markdown", "")),
+                            "depth": 0,
+                        }]
+                except Exception as e:
+                    logger.warning(f"[intelligent_fetcher] Tier 3 single fetch failed: {e}")
 
-        main_result = await fetch_page(url)
-        main_html = main_result.get("html") or ""
-        if not main_html:
-            return []
+            if len(pages) >= 1 and pages[0]["word_count"] >= _MIN_WORDS:
+                logger.info(
+                    f"[intelligent_fetcher] Tier 3 SUCCESS — "
+                    f"{len(pages)} pages (depths: {sorted(set(p.get('depth', 0) for p in pages))})"
+                )
+                return [
+                    {
+                        **p,
+                        "content": p.get("markdown", ""),
+                        "page_type": p.get("page_type", classify_page(p["url"], p.get("markdown", ""))),
+                    }
+                    for p in pages
+                ]
+                
+            logger.warning(f"[intelligent_fetcher] Tier 3 insufficient")
+        except Exception as exc:
+            logger.warning(f"[intelligent_fetcher] Tier 3 crawl failed: {exc}")
 
-        main_clean = clean_html(main_html)
-        sub_urls = extract_relevant_links(main_html, url)
-        method = main_result.get("method_used", "httpx")
-
-        pages = [{
-            "url": main_result.get("final_url", url),
-            "content": main_clean,
-            "html": main_html,
-            "markdown": main_clean,
-            "word_count": len(main_clean.split()),
-            "method": method,
-            "tier": 3,
-            "page_type": classify_page(url, main_clean),
-        }]
-
-        sub_results = await asyncio.gather(
-            *[fetch_page(u) for u in sub_urls[:max_pages - 1]],
-            return_exceptions=True,
-        )
-        for sub_url, res in zip(sub_urls, sub_results):
-            if isinstance(res, Exception) or not res.get("html"):
-                continue
-            sub_clean = clean_html(res["html"])
-            if len(sub_clean.split()) < 50:
-                continue
-            pages.append({
-                "url": sub_url,
-                "content": sub_clean,
-                "html": res["html"],
-                "markdown": sub_clean,
-                "word_count": len(sub_clean.split()),
-                "method": res.get("method_used", "httpx"),
-                "tier": 3,
-                "page_type": classify_page(sub_url, sub_clean),
-            })
-
-        logger.info(
-            f"[intelligent_fetcher] subpages {url} — Tier 3 manual: {len(pages)} pages"
-        )
-        return pages
-
-    except Exception as exc:
-        logger.error(f"[intelligent_fetcher] all subpage tiers failed for {url}: {exc}")
-        return []
+    logger.error(f"[intelligent_fetcher] all subpage tiers failed for {url}")
+    return []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -288,7 +281,7 @@ async def discover_programs_intelligent(
 ) -> list[dict]:
     """
     Phase 2: Discover all program URLs at a university.
-    Tries Firecrawl /map first (fastest), then Crawl4AI deep crawl.
+    Tries Firecrawl /map first (fastest), then fallback to Tier 1 custom, then Tier 3 Crawl4AI.
     Returns list of {url, program_name, degree_level} dicts.
     """
 
@@ -306,19 +299,32 @@ async def discover_programs_intelligent(
         except Exception as exc:
             logger.warning(f"[intelligent_fetcher] Firecrawl map failed: {exc}")
 
-    # Crawl4AI deep crawl as fallback
+    # Custom fetcher discovery as Tier 1 fallback
+    try:
+        from pipeline.tier1_custom import discover_university_programs
+        urls = await discover_university_programs(university_domain, max_urls=50)
+        if urls:
+            logger.info(
+                f"[intelligent_fetcher] discover {university_domain} — "
+                f"Tier 1 custom: {len(urls)} URLs"
+            )
+            return [{"url": u, "program_name": None, "degree_level": None} for u in urls]
+    except Exception as exc:
+        logger.warning(f"[intelligent_fetcher] Tier 1 custom discover failed: {exc}")
+
+    # Crawl4AI deep crawl as Tier 3 fallback
     if settings.crawl4ai_enabled:
         try:
-            from pipeline.tier1_crawl4ai import discover_university_programs
+            from pipeline.tier3_crawl4ai import discover_university_programs
             urls = await discover_university_programs(university_domain, max_urls=50)
             if urls:
                 logger.info(
                     f"[intelligent_fetcher] discover {university_domain} — "
-                    f"Crawl4AI: {len(urls)} URLs"
+                    f"Tier 3 Crawl4AI: {len(urls)} URLs"
                 )
                 return [{"url": u, "program_name": None, "degree_level": None} for u in urls]
         except Exception as exc:
-            logger.warning(f"[intelligent_fetcher] Crawl4AI discover failed: {exc}")
+            logger.warning(f"[intelligent_fetcher] Tier 3 Crawl4AI discover failed: {exc}")
 
     logger.error(f"[intelligent_fetcher] all discovery tiers failed for {university_domain}")
     return []
