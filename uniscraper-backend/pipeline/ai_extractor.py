@@ -367,10 +367,24 @@ def calculate_page_relevance_score(page_data: dict, field_group: str) -> int:
         elif any(pattern in url for pattern in ["admissions-and-aid", "financial-aid", "funding"]):
             score += 60
     
+    # ENGLISH REQUIREMENTS: Boost specialist pages significantly
+    if field_group == "english_requirements":
+        # +150 boost for actual english requirements pages
+        ENGLISH_EXACT_PATTERNS = [
+            "english-requirements",
+            "english-language-requirements",
+            "language-requirements",
+            "english-proficiency",
+            "ielts",
+            "toefl",
+        ]
+        if any(pattern in url for pattern in ENGLISH_EXACT_PATTERNS):
+            score += 150  # These pages have the actual IELTS/TOEFL scores
+    
     # Positive: specialized sub-pages
     if any(t in url for t in ["language", "english", "ielts", "toefl"]):
         if field_group == "english_requirements":
-            score += 40
+            score += 40  # Additional boost on top of the +150
         else:
             score -= 20
     if any(t in url for t in ["fee", "tuition", "cost", "funding"]):
@@ -557,9 +571,10 @@ async def extract_fields(
         # Each field gets its own ranked page selection — 6000-10000 chars each
         # Increased budgets for exhaustive crawling — information is often buried deep
         # CRITICAL: Tuition fees get MORE budget because they're often on separate pages
+        # CRITICAL: English requirements INCREASED to 10000 (from 6000) to ensure specialist pages fit
         program_context  = build_field_specific_context(pages_data, "program_duration",      6000)
-        english_context  = build_field_specific_context(pages_data, "english_requirements",  6000)
-        fees_context     = build_field_specific_context(pages_data, "tuition_fees",          10000)  # INCREASED
+        english_context  = build_field_specific_context(pages_data, "english_requirements",  10000)  # INCREASED
+        fees_context     = build_field_specific_context(pages_data, "tuition_fees",          10000)
         admission_context= build_field_specific_context(pages_data, "application_deadlines", 8000)
         intake_context   = build_field_specific_context(pages_data, "intake_months",         4000)
 

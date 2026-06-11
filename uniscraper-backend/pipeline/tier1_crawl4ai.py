@@ -326,6 +326,25 @@ async def deep_crawl_program_page(url: str, max_pages: int = 50) -> list[dict]:
                     return None
                 content_hashes.add(content_hash)
                 
+                # FIX: Detect duplicate content from JavaScript-rendered sites
+                # Arkansas State returns EXACTLY 1848 words for every sub-page
+                # (JavaScript routing serves the same shell for all URLs)
+                if len(pages) > 0:  # Have a main page to compare against
+                    main_page = pages[0]
+                    main_wc = main_page.get("word_count", 0)
+                    
+                    # If word count is EXACTLY the same as main page and > 500 words
+                    # this is likely the same content being served for different URLs
+                    if wc == main_wc and wc > 500:
+                        # Double-check: compare first 200 chars
+                        main_content = main_page.get("markdown", "")[:200]
+                        if markdown[:200] == main_content:
+                            logger.warning(
+                                f"[tier1_crawl4ai] DUPLICATE CONTENT: {fetch_url} "
+                                f"has identical content to main page ({wc} words) — skipping"
+                            )
+                            return None
+                
                 # Extract links for next wave
                 extracted_links = set()
                 
@@ -342,30 +361,10 @@ async def deep_crawl_program_page(url: str, max_pages: int = 50) -> list[dict]:
                 for match in re.finditer(r'(?<!\()https?://[^\s\)>]+', markdown):
                     extracted_links.add(match.group(0).rstrip(".,)"))
                 
-                # Source C: construct known sub-page patterns
-                base_domain = urlparse(fetch_url).netloc
-                base_path = urlparse(fetch_url).path.rstrip("/")
-                KNOWN_SUFFIXES = [
-                    "/entry-requirements", "/fees", "/how-to-apply",
-                    "/application", "/english-requirements", "/english-language",
-                    "/scholarships", "/funding", "/overview", "/about",
-                    "/structure", "/modules", "/curriculum",
-                ]
-                for suffix in KNOWN_SUFFIXES:
-                    extracted_links.add(f"https://{base_domain}{base_path}{suffix}")
-                
-                # Also add university-wide admission/fees pages
-                UNIVERSITY_WIDE_PATHS = [
-                    "/admissions-and-aid/tuition-and-fees",
-                    "/admissions-and-aid/financial-aid",
-                    "/tuition-and-fees",
-                    "/tuition/graduate",
-                    "/graduate-admissions",
-                    "/international-students/admissions",
-                    "/international/fees",
-                ]
-                for path in UNIVERSITY_WIDE_PATHS:
-                    extracted_links.add(f"https://{base_domain}{path}")
+                # REMOVED: Fake URL construction with KNOWN_SUFFIXES
+                # The previous code appended suffixes like /entry-requirements and /english-requirements
+                # to existing pages, creating non-existent URLs that timeout after 30s.
+                # Now we ONLY follow links that actually exist on the page.
                 
                 logger.info(f"[tier1_crawl4ai] Depth {depth} — {fetch_url} OK ({wc} words, {len(extracted_links)} links)")
                 
