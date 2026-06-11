@@ -350,21 +350,21 @@ def calculate_page_relevance_score(page_data: dict, field_group: str) -> int:
             "student-accounts",
         ]
         
-        if any(pattern in url_lower for pattern in TUITION_EXACT_URLS):
+        if any(pattern in url for pattern in TUITION_EXACT_URLS):
             score += 200  # This page almost certainly has fees
         
         # PENALISE constructed/fake sub-pages
         # These are URLs that end in /fees but were constructed
         # by appending /fees to a .html page URL
-        if (url_lower.endswith(".html/fees") or
-            ".html/entry-requirements" in url_lower or
-            ".html/how-to-apply" in url_lower or
-            ".html/overview" in url_lower or
-            ".html/english" in url_lower):
+        if (url.endswith(".html/fees") or
+            ".html/entry-requirements" in url or
+            ".html/how-to-apply" in url or
+            ".html/overview" in url or
+            ".html/english" in url):
             score -= 100  # These are fake constructed URLs
         
         # Medium priority for admission/aid pages (if not already boosted)
-        elif any(pattern in url_lower for pattern in ["admissions-and-aid", "financial-aid", "funding"]):
+        elif any(pattern in url for pattern in ["admissions-and-aid", "financial-aid", "funding"]):
             score += 60
     
     # Positive: specialized sub-pages
