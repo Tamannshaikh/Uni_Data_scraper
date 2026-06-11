@@ -178,6 +178,10 @@ def _score_and_filter_links(
     Returns dict of {clean_url: score} for URLs worth crawling.
     
     Extracted as helper for reuse in BFS crawling.
+    
+    IMPORTANT: Now includes university-wide admission/fees pages, not just
+    program-specific sub-pages. Tuition, scholarships, and requirements are
+    often on university-level pages like /admissions/, /tuition-and-fees/, etc.
     """
     HIGH_VALUE_KEYWORDS = [
         "entry-requirement", "entry_requirement", "admission", "requirement",
@@ -186,6 +190,9 @@ def _score_and_filter_links(
         "how-to-apply", "apply", "application", "deadline",
         "overview", "about", "programme", "program", "course",
         "structure", "modules", "curriculum",
+        # University-wide admission resources
+        "admissions-and-aid", "tuition-and-fees", "international-students",
+        "graduate-admissions", "graduate-tuition",
     ]
     SKIP_PATTERNS = [
         "login", "logout", "signin", "signup", "register", "cart", "shop",
@@ -199,6 +206,9 @@ def _score_and_filter_links(
     base_domain = urlparse(base_url).netloc
     base_path = urlparse(base_url).path.rstrip("/")
     
+    # Extract program-specific identifier (e.g., "mba", "computer-science")
+    program_identifier = base_path.split("/")[-1].replace(".html", "").replace(".htm", "")
+    
     scored_links = {}
     for abs_url in candidate_urls:
         parsed = urlparse(abs_url)
@@ -206,23 +216,42 @@ def _score_and_filter_links(
         # Same domain only
         if parsed.netloc != base_domain:
             continue
-        # Must be under the base program path (program-specific only)
-        if not parsed.path.startswith(base_path):
-            continue
+        
         # Skip noise
         if any(skip in abs_url.lower() for skip in SKIP_PATTERNS):
             continue
+            
         # Skip already visited
         clean_url = abs_url.rstrip("/")
         if clean_url in visited or clean_url == base_url.rstrip("/"):
             continue
         
-        # Score by keyword relevance
         url_lower = abs_url.lower()
-        score = sum(2 for kw in HIGH_VALUE_KEYWORDS if kw in url_lower)
         
-        if score > 0:
+        # HIGH PRIORITY: University-wide admission/fees pages
+        university_wide_keywords = [
+            "admissions-and-aid", "tuition-and-fees", "tuition-fees",
+            "international-students", "graduate-admissions", 
+            "graduate-tuition", "financial-aid", "scholarships",
+        ]
+        if any(kw in url_lower for kw in university_wide_keywords):
+            score = 10  # Very high priority
             scored_links[clean_url] = score
+            continue
+        
+        # MEDIUM-HIGH PRIORITY: Program-specific sub-pages
+        if base_path in parsed.path:
+            score = sum(2 for kw in HIGH_VALUE_KEYWORDS if kw in url_lower)
+            if score > 0:
+                scored_links[clean_url] = score
+            continue
+        
+        # LOW PRIORITY: Same-domain pages with program identifier
+        # (e.g., /admissions/ page that mentions "mba" or "computer-science")
+        if program_identifier and program_identifier in url_lower:
+            score = sum(1 for kw in HIGH_VALUE_KEYWORDS if kw in url_lower)
+            if score > 0:
+                scored_links[clean_url] = score
     
     return scored_links
 
@@ -254,14 +283,14 @@ async def deep_crawl_program_page(url: str, max_pages: int = 50) -> list[dict]:
         ignore_https_errors=True,
     )
     run_cfg = CrawlerRunConfig(
-        page_timeout=60000,
-        wait_until="domcontentloaded",
+        page_timeout=45000,  # Reduced from 60s to 45s
+        wait_until="domcontentloaded",  # Faster than networkidle
         word_count_threshold=settings.min_page_words,
         cache_mode=CacheMode.BYPASS,
         remove_overlay_elements=True,
         remove_consent_popups=True,
         process_iframes=True,
-        js_code="await new Promise(r => setTimeout(r, 3000));",
+        js_code="await new Promise(r => setTimeout(r, 2000));",  # Reduced from 3s to 2s
     )
     
     pages = []
@@ -324,6 +353,19 @@ async def deep_crawl_program_page(url: str, max_pages: int = 50) -> list[dict]:
                 ]
                 for suffix in KNOWN_SUFFIXES:
                     extracted_links.add(f"https://{base_domain}{base_path}{suffix}")
+                
+                # Also add university-wide admission/fees pages
+                UNIVERSITY_WIDE_PATHS = [
+                    "/admissions-and-aid/tuition-and-fees",
+                    "/admissions-and-aid/financial-aid",
+                    "/tuition-and-fees",
+                    "/tuition/graduate",
+                    "/graduate-admissions",
+                    "/international-students/admissions",
+                    "/international/fees",
+                ]
+                for path in UNIVERSITY_WIDE_PATHS:
+                    extracted_links.add(f"https://{base_domain}{path}")
                 
                 logger.info(f"[tier1_crawl4ai] Depth {depth} — {fetch_url} OK ({wc} words, {len(extracted_links)} links)")
                 
