@@ -363,11 +363,14 @@ def calculate_page_relevance_score(page_data: dict, field_group: str) -> int:
     return max(0, score)
 
 
-def build_field_specific_context(pages_data: list, field_group: str, max_chars: int = 5000) -> str:
+def build_field_specific_context(pages_data: list, field_group: str, max_chars: int = 8000) -> str:
     """
     Return the most relevant pages for a field group, sorted by score.
     Hard cap: max_chars total. Each page is included in full unless it alone
     exceeds the cap, in which case it is truncated.
+    
+    Increased to 8000 chars per field for deeper crawling — information is often
+    buried 2-3 levels deep.
     """
     if not pages_data:
         return ""
@@ -446,13 +449,13 @@ async def extract_fields(
 
     # ── Step 2: Field-specific context building ──────────────────────────────
     if pages_data:
-        # Each field gets its own ranked page selection — 4000 chars each
-        # admission_context gets extra budget since it covers intake + deadlines
-        program_context  = build_field_specific_context(pages_data, "program_duration",      3000)
-        english_context  = build_field_specific_context(pages_data, "english_requirements",  3000)
-        fees_context     = build_field_specific_context(pages_data, "tuition_fees",          3000)
-        admission_context= build_field_specific_context(pages_data, "application_deadlines", 3000)
-        intake_context   = build_field_specific_context(pages_data, "intake_months",         2000)
+        # Each field gets its own ranked page selection — 6000-8000 chars each
+        # Increased budgets for exhaustive crawling — information is often buried deep
+        program_context  = build_field_specific_context(pages_data, "program_duration",      6000)
+        english_context  = build_field_specific_context(pages_data, "english_requirements",  6000)
+        fees_context     = build_field_specific_context(pages_data, "tuition_fees",          6000)
+        admission_context= build_field_specific_context(pages_data, "application_deadlines", 8000)
+        intake_context   = build_field_specific_context(pages_data, "intake_months",         4000)
 
         # Deduplicate: if intake top page == admission top page, skip the repeat
         intake_section = ""

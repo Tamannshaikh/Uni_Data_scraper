@@ -167,21 +167,82 @@ async def fetch_single_page(url: str) -> dict:
 # Deep crawl — main page + relevant sub-pages
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def deep_crawl_program_page(url: str, max_pages: int = 15) -> list[dict]:
+def _score_and_filter_links(
+    candidate_urls: set[str],
+    base_url: str,
+    visited: set[str],
+) -> dict[str, int]:
     """
-    Crawl a university program page and all relevant sub-pages.
-    Replaces BFSDeepCrawlStrategy (broken in current Crawl4AI version —
-    CrawlResultContainer never exposes the actual CrawlResult content).
+    Score and filter candidate URLs for relevance to program admission information.
+    Returns dict of {clean_url: score} for URLs worth crawling.
+    
+    Extracted as helper for reuse in BFS crawling.
+    """
+    HIGH_VALUE_KEYWORDS = [
+        "entry-requirement", "entry_requirement", "admission", "requirement",
+        "english", "language", "ielts", "toefl",
+        "fee", "tuition", "cost", "funding", "scholarship", "finance",
+        "how-to-apply", "apply", "application", "deadline",
+        "overview", "about", "programme", "program", "course",
+        "structure", "modules", "curriculum",
+    ]
+    SKIP_PATTERNS = [
+        "login", "logout", "signin", "signup", "register", "cart", "shop",
+        "news", "event", "blog", "staff", "contact", "sitemap", "search",
+        "privacy", "cookie", "legal", "accessibility", "alumni", "donate",
+        "mailto:", "javascript:", "#", ".pdf", ".doc", ".zip",
+        "/find/", "/find?", "study-with-us", "graduate-courses",
+        "in_c=", "?in_c", "courses/list",
+    ]
+    
+    base_domain = urlparse(base_url).netloc
+    base_path = urlparse(base_url).path.rstrip("/")
+    
+    scored_links = {}
+    for abs_url in candidate_urls:
+        parsed = urlparse(abs_url)
+        
+        # Same domain only
+        if parsed.netloc != base_domain:
+            continue
+        # Must be under the base program path (program-specific only)
+        if not parsed.path.startswith(base_path):
+            continue
+        # Skip noise
+        if any(skip in abs_url.lower() for skip in SKIP_PATTERNS):
+            continue
+        # Skip already visited
+        clean_url = abs_url.rstrip("/")
+        if clean_url in visited or clean_url == base_url.rstrip("/"):
+            continue
+        
+        # Score by keyword relevance
+        url_lower = abs_url.lower()
+        score = sum(2 for kw in HIGH_VALUE_KEYWORDS if kw in url_lower)
+        
+        if score > 0:
+            scored_links[clean_url] = score
+    
+    return scored_links
+
+
+async def deep_crawl_program_page(url: str, max_pages: int = 50) -> list[dict]:
+    """
+    Exhaustive BFS crawl of a university program page and ALL relevant sub-pages.
     
     Strategy:
-    1. Fetch the main page with Crawl4AI single fetch
-    2. Extract all internal links
-    3. Score and rank links by keyword relevance  
-    4. Fetch top N sub-pages in parallel
+    1. Start with the main page (depth 0)
+    2. Extract and score all links from fetched pages
+    3. Fetch the highest-scoring unvisited links in waves (breadth-first)
+    4. Continue until max_pages reached or max_depth exceeded
     5. Return all pages as a flat list
+    
+    This ensures we discover information buried 2-3 levels deep (e.g.,
+    international fees, specific IELTS scores in nested pages).
     """
-    logger.info(f"[tier1_crawl4ai] deep_crawl_program_page called with URL: {url}")
-    pages = []
+    from config import settings
+    
+    logger.info(f"[tier1_crawl4ai] Exhaustive BFS crawl starting: {url} (max={max_pages}, depth={settings.max_depth})")
     
     browser_cfg = BrowserConfig(
         browser_type="chromium",
@@ -194,201 +255,150 @@ async def deep_crawl_program_page(url: str, max_pages: int = 15) -> list[dict]:
     run_cfg = CrawlerRunConfig(
         page_timeout=60000,
         wait_until="domcontentloaded",
-        word_count_threshold=30,
+        word_count_threshold=settings.min_page_words,
         cache_mode=CacheMode.BYPASS,
         remove_overlay_elements=True,
         remove_consent_popups=True,
         process_iframes=True,
-        # Execute JavaScript to handle dynamic content and lazy loading
-        js_code="await new Promise(r => setTimeout(r, 3000));",  # Wait 3s for content to render
+        js_code="await new Promise(r => setTimeout(r, 3000));",
     )
-
-    # ── Step 1: Fetch main page ──────────────────────────────────────────────
-    try:
-        async with AsyncWebCrawler(config=browser_cfg) as crawler:
-            result = await crawler.arun(url=url, config=run_cfg)
-            
-        if not result.success:
-            logger.warning(f"[tier1_crawl4ai] Main page fetch failed: {result.error_message}")
-            return []
-
-        logger.info(f"[tier1_crawl4ai] Main page fetch succeeded")
-        
-        # Debug: Check what markdown fields are available
-        if result.markdown:
-            logger.info(f"[tier1_crawl4ai] Markdown object type: {type(result.markdown)}")
-            logger.info(f"[tier1_crawl4ai] Markdown attributes: {dir(result.markdown)}")
-            if hasattr(result.markdown, "raw_markdown"):
-                logger.info(f"[tier1_crawl4ai] raw_markdown length: {len(result.markdown.raw_markdown or '')}")
-            if hasattr(result.markdown, "fit_markdown"):
-                logger.info(f"[tier1_crawl4ai] fit_markdown length: {len(result.markdown.fit_markdown or '')}")
-        
-        markdown = _extract_markdown(result)
-        logger.info(f"[tier1_crawl4ai] Extracted markdown length: {len(markdown)}")
-        
-        if len(markdown.split()) >= 30:
-            pages.append({
-                "url": url,
-                "markdown": markdown,
-                "html": result.html or "",
-                "word_count": len(markdown.split()),
-                "method": "crawl4ai",
-                "tier": 1,
-                "page_type": classify_page(url, markdown),
-            })
-            logger.info(f"[tier1_crawl4ai] Main page: {len(markdown.split())} words")
-            
-        main_html = result.html or ""
-
-    except Exception as e:
-        logger.warning(f"[tier1_crawl4ai] Main page exception: {e}")
-        return []
-
-    if not main_html:
-        return pages
-
-    # ── Step 2: Extract and score internal links ─────────────────────────────
-    import re
     
-    HIGH_VALUE_KEYWORDS = [
-        "entry-requirement", "entry_requirement", "admission", "requirement",
-        "english", "language", "ielts", "toefl",
-        "fee", "tuition", "cost", "funding", "scholarship", "finance",
-        "how-to-apply", "apply", "application", "deadline",
-        "overview", "about", "programme", "program", "course",
-    ]
-    # Pages that are generic site nav — penalise heavily
-    NAV_PENALTY_PATTERNS = [
-        "/find/", "/find?", "study-with-us", "graduate-courses",
-        "in_c=hcta", "in_c=", "?in_c", "courses/list", "/search",
-        "/sitemap", "/home", "/index",
-    ]
-    SKIP_PATTERNS = [
-        "login", "logout", "signin", "signup", "register", "cart", "shop",
-        "news", "event", "blog", "staff", "contact", "sitemap", "search",
-        "privacy", "cookie", "legal", "accessibility", "alumni", "donate",
-        "mailto:", "javascript:", "#", ".pdf", ".doc", ".zip",
-    ]
-
-    base_domain = urlparse(url).netloc
-    # Base path — sub-pages should START with this path (program-specific only)
-    base_path = urlparse(url).path.rstrip("/")
+    pages = []
+    visited = set()
+    queue = [(url, 0)]  # (url, depth)
+    visited.add(url.rstrip("/"))
     
-    candidate_urls = set()
-
-    # Source A: raw HTML links
-    if main_html:
-        soup = BeautifulSoup(main_html, "lxml")
-        for a in soup.find_all("a", href=True):
-            abs_url = urljoin(url, a["href"].strip())
-            candidate_urls.add(abs_url)
-
-    # Source B: markdown links — catches JS-rendered links HTML misses
-    # Markdown format: [text](url)
-    for match in re.finditer(r'\[([^\]]*)\]\((https?://[^\)]+)\)', markdown):
-        candidate_urls.add(match.group(2))
-    # Also plain URLs in markdown
-    for match in re.finditer(r'(?<!\()https?://[^\s\)>]+', markdown):
-        candidate_urls.add(match.group(0).rstrip(".,)"))
-
-    # Source C: construct known sub-page URLs directly
-    # Many university sites follow predictable patterns
-    KNOWN_SUBPAGE_SUFFIXES = [
-        "/entry-requirements/", "/entry-requirements",
-        "/fees/", "/fees", 
-        "/how-to-apply/", "/how-to-apply",
-        "/application/", "/application",
-        "/english-requirements/", "/english-language/",
-        "/scholarships/", "/funding/",
-        "/overview/", "/about/",
-    ]
-    for suffix in KNOWN_SUBPAGE_SUFFIXES:
-        candidate_urls.add(f"https://{base_domain}{base_path}{suffix}")
-
-    scored_links = {}
-    for abs_url in candidate_urls:
-        parsed = urlparse(abs_url)
-        
-        # Same domain only
-        if parsed.netloc != base_domain:
-            continue
-        # Must be under the base program path OR a known relevant sub-path
-        # (prevents generic /find/ and /study-with-us/ from sneaking in)
-        if not parsed.path.startswith(base_path):
-            continue
-        # Skip noise
-        if any(skip in abs_url.lower() for skip in SKIP_PATTERNS):
-            continue
-        # Skip already visited / same as main
-        clean_url = abs_url.rstrip("/")
-        if clean_url == url.rstrip("/") or clean_url in scored_links:
-            continue
-        
-        # Apply nav penalty — these are generic pages, not program-specific
-        if any(pat in abs_url.lower() for pat in NAV_PENALTY_PATTERNS):
-            continue  # skip entirely — they're never useful
-        
-        # Score by keyword relevance
-        url_lower = abs_url.lower()
-        score = sum(2 for kw in HIGH_VALUE_KEYWORDS if kw in url_lower)  # URL match = 2pts
-                
-        if score > 0:
-            scored_links[clean_url] = score
-
-    # Pick top sub-pages by score
-    top_subpages = sorted(scored_links, key=scored_links.get, reverse=True)[:max_pages - 1]
+    semaphore = asyncio.Semaphore(settings.max_concurrent_fetches)
     
-    logger.info(
-        f"[tier1_crawl4ai] Found {len(scored_links)} scored links "
-        f"(from {len(candidate_urls)} candidates), "
-        f"fetching top {len(top_subpages)}: {top_subpages}"
-    )
-
-    if not top_subpages:
-        return pages
-
-    # ── Step 3: Fetch sub-pages in parallel (max 4 concurrent) ───────────────
-    semaphore = asyncio.Semaphore(4)
-
-    async def fetch_subpage(suburl: str) -> dict | None:
+    async def fetch_page_with_links(fetch_url: str, depth: int) -> dict | None:
+        """Fetch a single page and extract its links."""
         async with semaphore:
             try:
                 async with AsyncWebCrawler(config=browser_cfg) as crawler:
-                    result = await crawler.arun(url=suburl, config=run_cfg)
-                    
-                if not result.success:
-                    return None
-
-                markdown = _extract_markdown(result)
+                    result = await crawler.arun(url=fetch_url, config=run_cfg)
                 
-                wc = len(markdown.split())
-                if wc < 30:
+                if not result.success:
+                    logger.debug(f"[tier1_crawl4ai] Depth {depth} — {fetch_url} failed: {result.error_message}")
                     return None
-
+                
+                markdown = _extract_markdown(result)
+                wc = len(markdown.split())
+                
+                if wc < settings.min_page_words:
+                    logger.debug(f"[tier1_crawl4ai] Depth {depth} — {fetch_url} too short ({wc} words)")
+                    return None
+                
+                # Extract links for next wave
+                extracted_links = set()
+                
+                # Source A: HTML links
+                if result.html:
+                    soup = BeautifulSoup(result.html, "lxml")
+                    for a in soup.find_all("a", href=True):
+                        abs_url = urljoin(fetch_url, a["href"].strip())
+                        extracted_links.add(abs_url)
+                
+                # Source B: markdown links
+                for match in re.finditer(r'\[([^\]]*)\]\((https?://[^\)]+)\)', markdown):
+                    extracted_links.add(match.group(2))
+                for match in re.finditer(r'(?<!\()https?://[^\s\)>]+', markdown):
+                    extracted_links.add(match.group(0).rstrip(".,)"))
+                
+                # Source C: construct known sub-page patterns
+                base_domain = urlparse(fetch_url).netloc
+                base_path = urlparse(fetch_url).path.rstrip("/")
+                KNOWN_SUFFIXES = [
+                    "/entry-requirements", "/fees", "/how-to-apply",
+                    "/application", "/english-requirements", "/english-language",
+                    "/scholarships", "/funding", "/overview", "/about",
+                    "/structure", "/modules", "/curriculum",
+                ]
+                for suffix in KNOWN_SUFFIXES:
+                    extracted_links.add(f"https://{base_domain}{base_path}{suffix}")
+                
+                logger.info(f"[tier1_crawl4ai] Depth {depth} — {fetch_url} OK ({wc} words, {len(extracted_links)} links)")
+                
                 return {
-                    "url": suburl,
+                    "url": fetch_url,
                     "markdown": markdown,
                     "html": result.html or "",
                     "word_count": wc,
                     "method": "crawl4ai",
                     "tier": 1,
-                    "page_type": classify_page(suburl, markdown),
+                    "page_type": classify_page(fetch_url, markdown),
+                    "depth": depth,
+                    "links": extracted_links,
                 }
+                
             except Exception as e:
-                logger.debug(f"[tier1_crawl4ai] Sub-page {suburl} failed: {e}")
+                logger.debug(f"[tier1_crawl4ai] Depth {depth} — {fetch_url} exception: {e}")
                 return None
-
-    sub_results = await asyncio.gather(*[fetch_subpage(u) for u in top_subpages])
     
-    for r in sub_results:
-        if r is not None:
-            pages.append(r)
-            logger.info(f"[tier1_crawl4ai] Sub-page OK: {r['url']} ({r['word_count']} words)")
-
+    # ── BFS wave-based crawling ───────────────────────────────────────────────
+    current_depth = 0
+    
+    while queue and len(pages) < max_pages:
+        # Group URLs by depth to process in waves
+        current_wave = []
+        next_queue = []
+        
+        for fetch_url, depth in queue:
+            if depth == current_depth:
+                current_wave.append((fetch_url, depth))
+            else:
+                next_queue.append((fetch_url, depth))
+        
+        if not current_wave:
+            # Move to next depth
+            current_depth += 1
+            queue = next_queue
+            if current_depth > settings.max_depth:
+                logger.info(f"[tier1_crawl4ai] Max depth {settings.max_depth} reached, stopping")
+                break
+            continue
+        
+        logger.info(f"[tier1_crawl4ai] Processing wave at depth {current_depth} — {len(current_wave)} URLs")
+        
+        # Fetch all URLs in current wave in parallel
+        wave_results = await asyncio.gather(
+            *[fetch_page_with_links(u, d) for u, d in current_wave]
+        )
+        
+        # Process results and queue next level
+        new_candidates = set()
+        
+        for result in wave_results:
+            if result is None:
+                continue
+            
+            # Add to pages list
+            result_copy = {k: v for k, v in result.items() if k != "links"}
+            pages.append(result_copy)
+            
+            # Collect links for next depth
+            if result["depth"] < settings.max_depth:
+                new_candidates.update(result["links"])
+        
+        # Score and filter candidates for next wave
+        if new_candidates and len(pages) < max_pages:
+            scored = _score_and_filter_links(new_candidates, url, visited)
+            
+            # Sort by score and add top candidates to queue
+            remaining_slots = max_pages - len(pages)
+            top_candidates = sorted(scored.items(), key=lambda x: x[1], reverse=True)[:remaining_slots]
+            
+            for candidate_url, score in top_candidates:
+                visited.add(candidate_url.rstrip("/"))
+                next_queue.append((candidate_url, current_depth + 1))
+                logger.debug(f"[tier1_crawl4ai] Queued depth {current_depth + 1}: {candidate_url} (score={score})")
+        
+        queue = next_queue
+    
     logger.info(
-        f"[tier1_crawl4ai] deep_crawl {url} — "
-        f"{len(pages)} valid pages total"
+        f"[tier1_crawl4ai] BFS crawl complete — "
+        f"{len(pages)} pages fetched (max depth reached: {max(p.get('depth', 0) for p in pages) if pages else 0})"
     )
+    
     return pages
 
 

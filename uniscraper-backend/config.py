@@ -13,11 +13,14 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     mongodb_uri: str = "mongodb://localhost:27017"
     db_name: str = "autonova_scraper"
-    max_subpages: int = 15
+    max_subpages: int = 50  # increased for exhaustive crawling
+    max_depth: int = 4      # crawl up to 4 levels deep
+    max_concurrent_fetches: int = 8  # parallel fetch limit
+    min_page_words: int = 30  # minimum words to keep a page
     max_pdfs: int = 2
     llm_model: str = "gemini-2.5-flash-lite"
     llm_max_tokens: int = 4000
-    llm_context_limit: int = 16000
+    llm_context_limit: int = 50000  # increased to 50k chars (well within 1M token limit)
     scrape_delay_seconds: int = 7   # delay between scrapes when testing multiple URLs
     # Raw comma-separated string from .env — use cors_origins_list property in app code
     cors_origins: str = "http://localhost:5173"

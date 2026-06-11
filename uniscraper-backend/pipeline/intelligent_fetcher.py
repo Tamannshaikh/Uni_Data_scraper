@@ -122,16 +122,19 @@ async def fetch_page_intelligent(url: str) -> dict:
 # Multi-page fetch (main + sub-pages)
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def fetch_subpages_intelligent(url: str, max_pages: int = 15) -> list[dict]:
+async def fetch_subpages_intelligent(url: str, max_pages: int = 50) -> list[dict]:
     """
     Fetch main page + admission-relevant sub-pages using the best available tier.
+    
+    Exhaustive crawling: visits ALL relevant pages up to max_pages and max_depth.
+    Information is often buried 2-3 levels deep (international fees, IELTS scores).
 
     Returns list of dicts, each with keys:
-        url, content, html, word_count, method, tier, page_type
+        url, content, html, word_count, method, tier, page_type, depth
     First item is the main page.
     """
 
-    # ── TIER 1: Crawl4AI deep crawl ──────────────────────────────────────────
+    # ── TIER 1: Crawl4AI exhaustive BFS crawl ─────────────────────────────────
     if settings.crawl4ai_enabled:
         try:
             from pipeline.tier1_crawl4ai import deep_crawl_program_page, fetch_single_page
@@ -157,6 +160,7 @@ async def fetch_subpages_intelligent(url: str, max_pages: int = 15) -> list[dict
                             "method": "crawl4ai",
                             "tier": 1,
                             "page_type": classify_page(url, single.get("markdown", "")),
+                            "depth": 0,
                         }]
                         logger.info(
                             f"[intelligent_fetcher] Single fetch fallback succeeded "
@@ -165,11 +169,11 @@ async def fetch_subpages_intelligent(url: str, max_pages: int = 15) -> list[dict
                 except Exception as e:
                     logger.warning(f"[intelligent_fetcher] Single fetch also failed: {e}")
 
-            # ── Tier 1 success check — changed from >= 2 to >= 1 ───────────────────
+            # ── Tier 1 success: any valid main page is enough to proceed ─────
             if len(pages) >= 1 and pages[0]["word_count"] >= _MIN_WORDS:
                 logger.info(
-                    f"[intelligent_fetcher] Tier 1 sufficient — "
-                    f"{len(pages)} pages, passing to extractor"
+                    f"[intelligent_fetcher] Tier 1 SUCCESS — "
+                    f"{len(pages)} pages (depths: {sorted(set(p.get('depth', 0) for p in pages))})"
                 )
                 return [
                     {
@@ -188,16 +192,17 @@ async def fetch_subpages_intelligent(url: str, max_pages: int = 15) -> list[dict
         except Exception as exc:
             logger.warning(f"[intelligent_fetcher] Tier 1 deep crawl failed: {exc}")
 
-    # ── TIER 2: Firecrawl crawl ───────────────────────────────────────────────
+    # ── TIER 2: Firecrawl exhaustive crawl ────────────────────────────────────
     if settings.firecrawl_enabled and settings.firecrawl_api_key:
         try:
             from pipeline.tier2_firecrawl import crawl_program_subpages
             from utils.page_classifier import classify_page
             pages = await crawl_program_subpages(url, max_pages)
             if len(pages) >= 1 and pages[0].get("word_count", 0) >= _MIN_WORDS:
+                max_depth = max(p.get("depth", 0) for p in pages) if pages else 0
                 logger.info(
-                    f"[intelligent_fetcher] subpages {url} — "
-                    f"Tier 2 crawl: {len(pages)} pages"
+                    f"[intelligent_fetcher] Tier 2 SUCCESS — "
+                    f"{len(pages)} pages (max depth: {max_depth})"
                 )
                 return [
                     {

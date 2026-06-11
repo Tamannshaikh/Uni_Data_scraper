@@ -121,13 +121,23 @@ async def fetch_single_page(url: str) -> dict:
 # Crawl main + sub-pages
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def crawl_program_subpages(url: str, max_pages: int = 10) -> list[dict]:
+async def crawl_program_subpages(url: str, max_pages: int = 50) -> list[dict]:
     """
-    Use Firecrawl scrape endpoint to fetch main page + admission-relevant sub-pages.
-    Scrapes each sub-page individually using constructed URLs (avoids crawl_url
-    which triggers Cloudflare with multiple requests).
-    Returns list of {url, markdown, html, word_count, method, tier} dicts.
+    Exhaustive multi-level crawl using Firecrawl scrape endpoint.
+    
+    Strategy:
+    1. Scrape main page
+    2. Extract and score all relevant links from main page
+    3. Scrape all high-value sub-pages in parallel (depth 1)
+    4. Extract links from depth-1 pages and score them
+    5. Scrape depth-2 pages if budget allows
+    6. Continue until max_pages reached or no more relevant links
+    
+    This handles cases where critical info (international fees, IELTS) is
+    buried 2-3 levels deep in the site structure.
     """
+    from config import settings
+    
     client = _get_client()
     if not client:
         return []
@@ -137,6 +147,8 @@ async def crawl_program_subpages(url: str, max_pages: int = 10) -> list[dict]:
 
     base_domain = urlparse(url).netloc
     base_path = urlparse(url).path.rstrip("/")
+
+    logger.info(f"[tier2_firecrawl] Exhaustive crawl starting: {url} (max={max_pages}, depth={settings.max_depth})")
 
     # Always scrape the main page first
     main = await fetch_single_page(url)
@@ -150,87 +162,131 @@ async def crawl_program_subpages(url: str, max_pages: int = 10) -> list[dict]:
         "word_count": main["word_count"],
         "method": "firecrawl",
         "tier": 2,
+        "depth": 0,
     }]
+    
+    visited = {url.rstrip("/")}
+    current_depth_pages = [main]
+    
+    # ── Multi-level crawling with depth tracking ──────────────────────────────
+    for depth in range(1, settings.max_depth + 1):
+        if len(pages) >= max_pages:
+            break
+        
+        # Extract candidates from current depth pages
+        all_candidates = set()
+        
+        for page in current_depth_pages:
+            # Source A: Construct known sub-page patterns
+            if depth == 1:  # Only from main page
+                KNOWN_SUFFIXES = [
+                    "/entry-requirements", "/fees", "/how-to-apply",
+                    "/application", "/english-requirements", "/english-language-requirements",
+                    "/scholarships", "/funding", "/overview", "/admissions",
+                    "/structure", "/modules", "/curriculum",
+                    "/international-students", "/international",
+                ]
+                for suffix in KNOWN_SUFFIXES:
+                    all_candidates.add(f"https://{base_domain}{base_path}{suffix}")
+            
+            # Source B: Extract from markdown links
+            import re
+            page_md = page.get("markdown", "")
+            if isinstance(page_md, str):
+                HIGH_VALUE_KEYWORDS = [
+                    "entry-requirement", "fees", "tuition", "how-to-apply",
+                    "application", "english", "scholarship", "funding", "admission",
+                    "structure", "module", "curriculum", "international",
+                ]
+                for match in re.finditer(r'\[([^\]]*)\]\((https?://[^\)]+)\)', page_md):
+                    link_url = match.group(2)
+                    if base_domain in link_url and any(kw in link_url.lower() for kw in HIGH_VALUE_KEYWORDS):
+                        all_candidates.add(link_url)
+        
+        # Score and filter candidates
+        scored = {}
+        for candidate in all_candidates:
+            clean = candidate.rstrip("/")
+            if clean in visited:
+                continue
+            
+            parsed = urlparse(candidate)
+            if parsed.netloc != base_domain:
+                continue
+            if not parsed.path.startswith(base_path):
+                continue
+            
+            # Skip noise
+            SKIP_PATTERNS = [
+                "login", "staff", "news", "event", "alumni", "donate",
+                "privacy", "cookie", "visa", "undergraduate",
+            ]
+            if any(skip in candidate.lower() for skip in SKIP_PATTERNS):
+                continue
+            
+            # Score by URL keywords
+            HIGH_VALUE_KEYWORDS = [
+                "entry-requirement", "fees", "tuition", "english", "ielts",
+                "how-to-apply", "admission", "scholarship", "funding",
+                "international", "structure", "curriculum",
+            ]
+            score = sum(3 for kw in HIGH_VALUE_KEYWORDS if kw in candidate.lower())
+            
+            if score > 0:
+                scored[clean] = score
+        
+        if not scored:
+            logger.info(f"[tier2_firecrawl] No more candidates at depth {depth}, stopping")
+            break
+        
+        # Select top candidates for this depth
+        remaining_slots = max_pages - len(pages)
+        top_candidates = sorted(scored.items(), key=lambda x: x[1], reverse=True)[:remaining_slots]
+        
+        logger.info(f"[tier2_firecrawl] Depth {depth} — scraping {len(top_candidates)} candidates")
+        
+        # Scrape in parallel
+        semaphore = asyncio.Semaphore(settings.max_concurrent_fetches)
+        
+        async def scrape_candidate(candidate_url: str, score: int) -> dict | None:
+            async with semaphore:
+                result = await fetch_single_page(candidate_url)
+                if result["word_count"] >= 50:
+                    visited.add(candidate_url.rstrip("/"))
+                    logger.info(f"[tier2_firecrawl] Depth {depth} — {candidate_url} OK ({result['word_count']} words, score={score})")
+                    return {
+                        "url": candidate_url,
+                        "markdown": result["markdown"],
+                        "html": result["html"],
+                        "word_count": result["word_count"],
+                        "method": "firecrawl",
+                        "tier": 2,
+                        "depth": depth,
+                    }
+                return None
+        
+        depth_results = await asyncio.gather(
+            *[scrape_candidate(u, s) for u, s in top_candidates],
+            return_exceptions=True,
+        )
+        
+        current_depth_pages = []
+        for r in depth_results:
+            if isinstance(r, dict):
+                pages.append(r)
+                current_depth_pages.append(r)
+        
+        if not current_depth_pages:
+            logger.info(f"[tier2_firecrawl] No valid pages at depth {depth}, stopping")
+            break
 
-    # Construct known sub-page URLs — covers the most common university patterns
-    KNOWN_SUBPAGE_SUFFIXES = [
-        "/entry-requirements",
-        "/fees",
-        "/how-to-apply",
-        "/application",
-        "/english-requirements",
-        "/english-language-requirements",
-        "/scholarships",
-        "/funding",
-        "/overview",
-        "/admissions",
-    ]
-    candidate_urls = [
-        f"https://{base_domain}{base_path}{suffix}"
-        for suffix in KNOWN_SUBPAGE_SUFFIXES
-    ]
-
-    # Also extract any links from main page markdown that look relevant
-    import re
-    HIGH_VALUE_KEYWORDS = [
-        "entry-requirement", "fees", "tuition", "how-to-apply",
-        "application", "english", "scholarship", "funding", "admission",
-    ]
-    for match in re.finditer(r'\[([^\]]*)\]\((https?://[^\)]+)\)', main["markdown"] or ""):
-        link_url = match.group(2)
-        if base_domain in link_url and any(kw in link_url.lower() for kw in HIGH_VALUE_KEYWORDS):
-            clean = link_url.rstrip("/")
-            if clean not in candidate_urls and clean != url.rstrip("/"):
-                candidate_urls.append(clean)
-
-    # Deduplicate, cap at max_pages-1 remaining slots
-    seen = {url.rstrip("/")}
-    unique_candidates = []
-    for u in candidate_urls:
-        clean = u.rstrip("/")
-        if clean not in seen:
-            seen.add(clean)
-            unique_candidates.append(u)
-    unique_candidates = unique_candidates[: max_pages - 1]
-
-    logger.info(
-        f"[tier2_firecrawl] scraping {len(unique_candidates)} candidate sub-pages for {url}"
-    )
-
-    # Scrape each sub-page individually with concurrency limit
-    semaphore = asyncio.Semaphore(3)
-
-    async def scrape_subpage(suburl: str) -> dict | None:
-        async with semaphore:
-            result = await fetch_single_page(suburl)
-            if result["word_count"] >= 50:
-                logger.info(f"[tier2_firecrawl] page OK: {suburl} ({result['word_count']} words)")
-                return {
-                    "url": suburl,
-                    "markdown": result["markdown"],
-                    "html": result["html"],
-                    "word_count": result["word_count"],
-                    "method": "firecrawl",
-                    "tier": 2,
-                }
-            return None
-
-    sub_results = await asyncio.gather(
-        *[scrape_subpage(u) for u in unique_candidates],
-        return_exceptions=True,
-    )
-    for r in sub_results:
-        if isinstance(r, dict):
-            pages.append(r)
-
-    # ── Second pass: add university-wide English requirements if not found ────
+    # ── Second pass: Add university-wide English requirements if missing ──────
     english_found = any(
         "english" in p["url"].lower() or "language" in p["url"].lower()
         for p in pages
     )
-    if not english_found:
-        from urllib.parse import urlparse as _urlparse
-        base = f"https://{_urlparse(url).netloc}"
+    if not english_found and len(pages) < max_pages:
+        base = f"https://{urlparse(url).netloc}"
         candidate_english_urls = [
             f"{base}/english-language-requirements",
             f"{base}/study/english-language-requirements",
@@ -239,20 +295,26 @@ async def crawl_program_subpages(url: str, max_pages: int = 10) -> list[dict]:
             f"{base}/information-for/international-students/english-language-requirements",
         ]
         for eng_url in candidate_english_urls:
+            if eng_url.rstrip("/") in visited:
+                continue
             r = await fetch_single_page(eng_url)
             if r["word_count"] >= 100:
                 pages.append({
                     "url": eng_url, "markdown": r["markdown"],
                     "html": r["html"], "word_count": r["word_count"],
-                    "method": "firecrawl", "tier": 2,
+                    "method": "firecrawl", "tier": 2, "depth": 99,
                 })
                 logger.info(
-                    f"[tier2_firecrawl] Added English req page: {eng_url} "
+                    f"[tier2_firecrawl] Added university-wide English page: {eng_url} "
                     f"({r['word_count']} words)"
                 )
-                break  # found one, stop
+                break
 
-    logger.info(f"[tier2_firecrawl] crawl {url} — {len(pages)} usable pages total")
+    max_depth_reached = max(p.get("depth", 0) for p in pages) if pages else 0
+    logger.info(
+        f"[tier2_firecrawl] Exhaustive crawl complete — "
+        f"{len(pages)} pages (max depth: {max_depth_reached})"
+    )
     return pages
 
 
