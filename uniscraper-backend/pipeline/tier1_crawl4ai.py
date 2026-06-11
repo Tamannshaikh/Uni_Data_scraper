@@ -430,6 +430,37 @@ async def deep_crawl_program_page(url: str, max_pages: int = 50) -> list[dict]:
             if result["depth"] < settings.max_depth:
                 new_candidates.update(result["links"])
         
+        # ── EARLY EXIT: Check if we have all critical pages ──────────────────
+        if len(pages) >= 8 and current_depth >= 1:
+            has_fees_page = any(
+                any(kw in p.get("url", "").lower() for kw in [
+                    "tuition", "fees", "cost", "bursar",
+                    "admissions-and-aid", "financial"
+                ])
+                for p in pages
+            )
+            has_english_page = any(
+                any(kw in p.get("url", "").lower() for kw in [
+                    "english", "ielts", "language", "toefl"
+                ])
+                for p in pages
+            )
+            has_entry_page = any(
+                any(kw in p.get("url", "").lower() for kw in [
+                    "entry-requirement", "admission", "eligib",
+                    "apply", "requirement"
+                ])
+                for p in pages
+            )
+            
+            # If we have all critical page types, stop crawling
+            if has_fees_page and has_english_page and has_entry_page:
+                logger.info(
+                    f"[tier1_crawl4ai] Early exit at depth {current_depth} — "
+                    f"all critical pages found ({len(pages)} pages total)"
+                )
+                break
+        
         # Score and filter candidates for next wave
         if new_candidates and len(pages) < max_pages:
             scored = _score_and_filter_links(new_candidates, url, visited)

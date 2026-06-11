@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     mongodb_uri: str = "mongodb://localhost:27017"
     db_name: str = "autonova_scraper"
-    max_subpages: int = 50  # increased for exhaustive crawling
+    max_subpages: int = 20  # reduced from 50 — most relevant pages are in depth 0-1
     max_depth: int = 4      # crawl up to 4 levels deep
     max_concurrent_fetches: int = 12  # parallel fetch limit — increased for speed
     min_page_words: int = 30  # minimum words to keep a page

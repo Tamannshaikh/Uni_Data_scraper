@@ -334,15 +334,37 @@ def calculate_page_relevance_score(page_data: dict, field_group: str) -> int:
     # ── LAYER 2: URL signals ──────────────────────────────────────────────────
     # CRITICAL: University-wide tuition pages
     if field_group == "tuition_fees":
-        # Super high priority for actual tuition/fee pages
-        if any(pattern in url for pattern in [
-            "tuition-and-fees", "tuition-fees", "/tuition/", "/fees/",
-            "admissions-and-aid/tuition", "financial-information",
-            "cost-of-attendance", "costs-and-funding",
-        ]):
-            score += 120  # MASSIVE boost — these pages have the actual fees
-        # Medium priority for admission/aid pages
-        elif any(pattern in url for pattern in ["admissions-and-aid", "financial-aid", "funding"]):
+        # MAXIMUM priority for actual tuition/fee pages
+        TUITION_EXACT_URLS = [
+            "tuition-and-fees",
+            "tuition_and_fees",
+            "cost-of-attendance",
+            "tuition-fees",
+            "graduate-tuition",
+            "tuition/",
+            "/fees/graduate",
+            "/fees/international",
+            "admissions-and-aid/tuition",
+            "admissions/tuition",
+            "bursar",
+            "student-accounts",
+        ]
+        
+        if any(pattern in url_lower for pattern in TUITION_EXACT_URLS):
+            score += 200  # This page almost certainly has fees
+        
+        # PENALISE constructed/fake sub-pages
+        # These are URLs that end in /fees but were constructed
+        # by appending /fees to a .html page URL
+        if (url_lower.endswith(".html/fees") or
+            ".html/entry-requirements" in url_lower or
+            ".html/how-to-apply" in url_lower or
+            ".html/overview" in url_lower or
+            ".html/english" in url_lower):
+            score -= 100  # These are fake constructed URLs
+        
+        # Medium priority for admission/aid pages (if not already boosted)
+        elif any(pattern in url_lower for pattern in ["admissions-and-aid", "financial-aid", "funding"]):
             score += 60
     
     # Positive: specialized sub-pages
@@ -403,6 +425,15 @@ def build_field_specific_context(pages_data: list, field_group: str, max_chars: 
         key=lambda x: x[0],
         reverse=True,
     )
+    
+    # Debug logging for tuition_fees to see what's winning
+    if field_group == "tuition_fees":
+        logger.info("[ai_extractor] tuition_fees top pages:")
+        for score, page in scored[:5]:
+            logger.info(
+                f"  score={score:3d} url={page['url'][-70:]} "
+                f"words={page.get('word_count', 0)}"
+            )
 
     parts = []
     used = 0
