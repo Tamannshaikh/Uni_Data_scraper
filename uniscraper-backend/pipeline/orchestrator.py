@@ -99,14 +99,44 @@ async def run_scrape(scrape_id: str, url: str, context_hint: str = "") -> None:
         pages_data: list[dict] = []
         text_parts: list[tuple[str, str]] = []
 
+        from utils.text_cleaner import strip_markdown_noise, clean_text_content
+
+        # Signals that a page returned a soft-404 / error page instead of real content
+        _ERROR_PAGE_SIGNALS = [
+            "page not found",
+            "404",
+            "we can't find the information",
+            "the page you requested could not be found",
+            "sorry, we couldn't find that page",
+            "this page doesn't exist",
+            "no longer available",
+        ]
+
         for page in all_pages:
             content = page.get("content") or page.get("markdown") or ""
+            # Strip inline SVG/base64 data URIs before any processing.
+            # Firecrawl embeds university logos as 50-130KB data: URI blobs
+            # in every page — this inflates combined text from ~30k to 2M+.
+            # Then deep-clean nav boilerplate so routing context is signal, not noise.
+            if content:
+                content = clean_text_content(strip_markdown_noise(content))
             if not content or len(content.split()) < 30:
                 logger.warning(
                     f"[orchestrator] skipping thin page "
                     f"{page.get('url', '')[-60:]} ({len(content.split())} words)"
                 )
                 continue
+
+            # Drop soft-404 / error pages — Firecrawl returns HTTP 200 for these
+            content_lower = content.lower()
+            if any(sig in content_lower for sig in _ERROR_PAGE_SIGNALS):
+                # Only drop if error signal appears near the top (first 500 chars)
+                # to avoid false positives on pages that mention 404 errors in context
+                if any(sig in content_lower[:500] for sig in _ERROR_PAGE_SIGNALS):
+                    logger.warning(
+                        f"[orchestrator] dropping soft-404 page: {page.get('url', '')[-60:]}"
+                    )
+                    continue
 
             page_url = page.get("url", url)
             page_type = page.get("page_type") or classify_page(page_url, content)

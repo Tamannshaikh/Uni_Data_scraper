@@ -77,6 +77,7 @@ async def fetch_single_page(url: str) -> dict:
                 formats=["markdown", "html", "links"],
                 only_main_content=False,  # Changed to False to get full content, not just fragments
                 wait_for=2000,
+                timeout=60000,  # 60s — default 35s is too short for heavy JS sites like Imperial
             )
 
         result = await loop.run_in_executor(None, _scrape)
@@ -210,7 +211,7 @@ async def crawl_program_subpages(url: str, max_pages: int = 50) -> list[dict]:
                     "structure", "module", "curriculum", "international",
                 ]
                 for match in re.finditer(r'\[([^\]]*)\]\((https?://[^\)]+)\)', page_md):
-                    link_url = match.group(2)
+                    link_url = match.group(2).split("#")[0]  # strip fragments
                     if base_domain in link_url and any(kw in link_url.lower() for kw in HIGH_VALUE_KEYWORDS):
                         all_candidates.add(link_url)
         
@@ -218,6 +219,9 @@ async def crawl_program_subpages(url: str, max_pages: int = 50) -> list[dict]:
         scored = {}
         for candidate in all_candidates:
             clean = candidate.rstrip("/")
+            # Strip fragment identifiers — /fees/#nav is the same page as /fees
+            if "#" in clean:
+                clean = clean.split("#")[0].rstrip("/")
             if clean in visited:
                 continue
             
@@ -263,14 +267,22 @@ async def crawl_program_subpages(url: str, max_pages: int = 50) -> list[dict]:
             async with semaphore:
                 result = await fetch_single_page(candidate_url)
                 if result["word_count"] >= 50:
+                    md = result["markdown"] or ""
+                    # Drop soft-404 pages — Firecrawl returns HTTP 200 for these
+                    md_lower = md.lower()
+                    if any(sig in md_lower[:500] for sig in [
+                        "page not found", "we can't find", "doesn't exist",
+                        "no longer available", "404",
+                    ]):
+                        logger.debug(f"[tier2_firecrawl] {candidate_url} — soft-404, skipping")
+                        return None
                     # Check for duplicate content
-                    if result["markdown"]:
-                        content_hash = hashlib.md5(result["markdown"].encode('utf-8')).hexdigest()
+                    if md:
+                        content_hash = hashlib.md5(md.encode('utf-8')).hexdigest()
                         if content_hash in content_hashes:
                             logger.debug(f"[tier2_firecrawl] Depth {depth} — {candidate_url} duplicate content (hash: {content_hash[:8]}), skipping")
                             return None
                         content_hashes.add(content_hash)
-                    
                     visited.add(candidate_url.rstrip("/"))
                     logger.info(f"[tier2_firecrawl] Depth {depth} — {candidate_url} OK ({result['word_count']} words, score={score})")
                     return {
@@ -312,12 +324,20 @@ async def crawl_program_subpages(url: str, max_pages: int = 50) -> list[dict]:
             f"{base}/admissions/english-language",
             f"{base}/find/english-language-requirements",
             f"{base}/information-for/international-students/english-language-requirements",
+            f"{base}/info/english-language-requirements",
+            f"{base}/information-for/international-students/english",
+            f"{base}/study-with-us/english-language-requirements",
         ]
         for eng_url in candidate_english_urls:
             if eng_url.rstrip("/") in visited:
                 continue
             r = await fetch_single_page(eng_url)
-            if r["word_count"] >= 100:
+            # Check it's not a soft-404
+            md_lower = (r.get("markdown") or "").lower()
+            is_404 = any(sig in md_lower[:500] for sig in [
+                "page not found", "we can't find", "doesn't exist", "no longer available"
+            ])
+            if r["word_count"] >= 100 and not is_404:
                 pages.append({
                     "url": eng_url, "markdown": r["markdown"],
                     "html": r["html"], "word_count": r["word_count"],
@@ -328,6 +348,59 @@ async def crawl_program_subpages(url: str, max_pages: int = 50) -> list[dict]:
                     f"({r['word_count']} words)"
                 )
                 break
+
+    # ── Third pass: Try to get international fees via Firecrawl actions ───────
+    # Some sites (e.g. Melbourne) show domestic/international fees behind a JS tab.
+    # Re-fetch the fees page with a click action to switch to "International students".
+    int_fees_found = any(
+        "international" in (p.get("markdown") or "").lower()[:2000]
+        and any(kw in (p.get("markdown") or "").lower() for kw in ["aud", "$", "fee"])
+        for p in pages
+        if "fee" in p.get("url", "").lower()
+    )
+    fees_page = next(
+        (p for p in pages if p.get("url", "").rstrip("/").endswith("/fees")), None
+    )
+    if not int_fees_found and fees_page and len(pages) < max_pages:
+        try:
+            loop = asyncio.get_event_loop()
+
+            def _scrape_intl():
+                return client.scrape_url(
+                    fees_page["url"],
+                    formats=["markdown"],
+                    only_main_content=False,
+                    wait_for=3000,
+                    timeout=60000,
+                    actions=[
+                        {"type": "click", "selector": "[data-tab='international'], button[aria-label*='International'], label[for*='international'], [data-audience='international']"},
+                        {"type": "wait", "milliseconds": 2000},
+                    ],
+                )
+
+            intl_result = await loop.run_in_executor(None, _scrape_intl)
+            intl_md = getattr(intl_result, "markdown", None) or ""
+            intl_wc = len(intl_md.split())
+            # Only add if it actually has different content
+            if intl_wc >= 100:
+                intl_hash = hashlib.md5(intl_md.encode("utf-8")).hexdigest()
+                if intl_hash not in content_hashes:
+                    content_hashes.add(intl_hash)
+                    pages.append({
+                        "url": fees_page["url"] + "?view=international",
+                        "markdown": intl_md,
+                        "html": "",
+                        "word_count": intl_wc,
+                        "method": "firecrawl",
+                        "tier": 2,
+                        "depth": 99,
+                    })
+                    logger.info(
+                        f"[tier2_firecrawl] Added international fees view: "
+                        f"{intl_wc} words"
+                    )
+        except Exception as exc:
+            logger.debug(f"[tier2_firecrawl] International fees action failed: {exc}")
 
     max_depth_reached = max(p.get("depth", 0) for p in pages) if pages else 0
     logger.info(

@@ -111,9 +111,24 @@ async def scrape_one(url: str, context_hint: str = "") -> dict:
     pages_data = []
     text_parts = []
 
+    from utils.text_cleaner import strip_markdown_noise
+
+    _ERROR_PAGE_SIGNALS = [
+        "page not found", "404", "we can't find the information",
+        "the page you requested could not be found",
+        "sorry, we couldn't find that page", "this page doesn't exist",
+    ]
+
     for i, page in enumerate(all_pages):
         content = page.get("content") or page.get("markdown") or ""
+        # Strip SVG/data-URI noise and clean nav boilerplate before routing
+        if content:
+            content = clean_text_content(strip_markdown_noise(content))
         if not content or len(content.split()) < 30:
+            continue
+        # Drop soft-404 pages
+        content_lower = content.lower()
+        if any(sig in content_lower[:500] for sig in _ERROR_PAGE_SIGNALS):
             continue
         page_url = page.get("url", url)
         page_type = page.get("page_type") or classify_page(page_url, content)
