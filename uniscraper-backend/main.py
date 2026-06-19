@@ -79,11 +79,13 @@ try:
     history = importlib.import_module("routers.history")
     batch = importlib.import_module("routers.batch")
     export = importlib.import_module("routers.export")
+    discover = importlib.import_module("routers.discover")
 
     app.include_router(scrape.router, prefix="/api/v1")
     app.include_router(history.router, prefix="/api/v1")
     app.include_router(batch.router, prefix="/api/v1")
     app.include_router(export.router, prefix="/api/v1")
+    app.include_router(discover.router, prefix="/api/v1")
 except Exception as e:
     logger.warning("Some routers failed to import; running in limited mode: %s", e)
 

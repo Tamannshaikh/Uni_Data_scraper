@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     crawl4ai_enabled: bool = True
     firecrawl_enabled: bool = True
 
+    # ── Phase 2: Program discovery ─────────────────────────────────────────────
+    serpapi_key: str = ""
+    serpapi_enabled: bool = True
+
     @property
     def cors_origins_list(self) -> List[str]:
         """Parse the comma-separated CORS_ORIGINS string into a list."""

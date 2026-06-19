@@ -1,8 +1,9 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Globe, History, Layers } from "lucide-react";
+import { Globe, History, Layers, Search } from "lucide-react";
 
 const NAV = [
   { to: "/", label: "Compile", icon: Globe },
+  { to: "/discover", label: "Find Programs", icon: Search },
   { to: "/history", label: "Archive", icon: History },
   { to: "/batch", label: "Batch", icon: Layers },
 ] as const;
