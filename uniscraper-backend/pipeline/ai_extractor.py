@@ -42,11 +42,8 @@ _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 _GROQ_MODEL = "llama-3.3-70b-versatile"  # Best Groq model for structured extraction
 
 # ── Gemini rate-limit controls ────────────────────────────────────────────────
-# Free tier: 10 RPM, ~4M TPM for Flash. We target max 3 RPM to stay safe.
+# Free tier: 10 RPM, ~4M TPM for Flash. We enforce 3 RPM to stay safe.
 _GEMINI_SEMAPHORE = asyncio.Semaphore(1)   # Only ONE Gemini call at a time globally
-_MIN_CALL_GAP = 20.0                        # 20s between calls = max 3 RPM
-_POST_SUCCESS_COOLDOWN = 10.0               # Extra cooldown after every success
-_last_call_time: float = 0.0
 
 # Retry delays: 30s → 60s → 120s → 180s → 240s  (aggressive backoff)
 _RETRY_DELAYS = [30, 60, 120, 180, 240]
@@ -145,23 +142,15 @@ def _safe_fallback(reason: str) -> dict:
 # ── API call ──────────────────────────────────────────────────────────────────
 
 async def _call_gemini(user_prompt: str, model: str | None = None) -> str:
-    global _last_call_time
-
     async with _GEMINI_SEMAPHORE:  # Only one Gemini call at a time globally
-        # ── RPM rate limiter ──────────────────────────────────────────────────
+        # ── RPM rate limiter (rolling window) ─────────────────────────────────
         rpm_wait = _enforce_rpm_limit()
         if rpm_wait > 0:
-            print(f"[rate-limit] RPM cap reached — waiting {rpm_wait:.1f}s")
+            logger.info(f"[rate-limit] RPM cap reached — waiting {rpm_wait:.1f}s")
             await asyncio.sleep(rpm_wait)
 
-        # ── Minimum gap between calls ─────────────────────────────────────────
-        now = time.monotonic()
-        gap_wait = _MIN_CALL_GAP - (now - _last_call_time)
-        if gap_wait > 0:
-            await asyncio.sleep(gap_wait)
-
-        _last_call_time = time.monotonic()
-        _request_timestamps.append(_last_call_time)
+        # Track this request in the rolling window
+        _request_timestamps.append(time.monotonic())
 
         use_model = model or settings.llm_model
         url = _GEMINI_URL.format(
@@ -181,9 +170,6 @@ async def _call_gemini(user_prompt: str, model: str | None = None) -> str:
             response = await client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
-
-        # ── Post-success cooldown ─────────────────────────────────────────────
-        await asyncio.sleep(_POST_SUCCESS_COOLDOWN)
 
     try:
         return data["candidates"][0]["content"]["parts"][0]["text"]

@@ -83,6 +83,7 @@ async def run_discovery(discovery_id: str, university_name: str) -> None:
             domain=domain,
             university_name=university_name,
             max_pages=80,
+            max_programs=500,  # Increased from default 200
         )
 
         elapsed = round(time.monotonic() - start_time, 2)
