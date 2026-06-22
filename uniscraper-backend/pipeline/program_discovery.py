@@ -36,11 +36,16 @@ _HEADERS = {
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _normalize_url(url: str) -> str:
-    """Strip www., trailing slash, query params for deduplication."""
+    """Strip www., trailing slash, query params, and .html/.xml extensions for deduplication."""
     try:
         p = urlparse(url)
         netloc = p.netloc.lower().replace("www.", "")
         path = p.path.rstrip("/") or "/"
+        # Strip common page extensions so .html and .xml versions of the same page dedup correctly
+        for ext in (".html", ".htm", ".xml", ".aspx", ".php"):
+            if path.endswith(ext):
+                path = path[: -len(ext)]
+                break
         return urlunparse((p.scheme.lower(), netloc, path, "", "", ""))
     except Exception:
         return url
@@ -506,8 +511,9 @@ def _has_obvious_degree_slug(url: str) -> tuple[bool, str | None]:
     if not parts:
         return (False, None)
     
-    # Check last part (slug) for degree prefix
+    # Check last part (slug) for degree prefix — strip extension first
     last_part = parts[-1]
+    last_part = last_part.rsplit(".", 1)[0] if "." in last_part else last_part
     
     for prefix in _DEGREE_PREFIXES:
         if last_part.startswith(prefix):
@@ -596,18 +602,38 @@ async def _auto_confirm_candidate(url: str, university_name: str) -> dict | None
         path = urlparse(url.lower()).path
         parts = [p for p in path.split("/") if p]
         if parts:
-            # Last part is the slug, e.g., "msc-robotics"
+            # Last part is the slug — strip file extension first
             slug = parts[-1]
-            # Convert to readable name: "msc-robotics" -> "MSc Robotics"
-            program_name = slug.replace("-", " ").title()
-            
+            slug = slug.rsplit(".", 1)[0] if "." in slug else slug
+            # Convert slug to readable name: "ma-in-sociology" -> "MA in Sociology"
+            # Keep degree code uppercase, lowercase connectors
+            words = slug.replace("-", " ").split()
+            _UPPER_CODES = {
+                "ma": "MA", "msc": "MSc", "ms": "MS", "mba": "MBA",
+                "llm": "LLM", "mphil": "MPhil", "mres": "MRes", "meng": "MEng",
+                "mph": "MPH", "mfa": "MFA", "mpa": "MPA", "med": "MEd",
+                "phd": "PhD", "dba": "DBA", "edd": "EdD", "engd": "EngD",
+                "pgce": "PGCE", "pgdip": "PGDip", "mpharm": "MPharm",
+                "msci": "MSci", "mla": "MLA", "llb": "LLB",
+            }
+            _LOWER_WORDS = {"in", "of", "and", "for", "the", "a", "an", "with", "at"}
+            formatted = []
+            for i, w in enumerate(words):
+                if w in _UPPER_CODES:
+                    formatted.append(_UPPER_CODES[w])
+                elif i > 0 and w in _LOWER_WORDS:
+                    formatted.append(w)
+                else:
+                    formatted.append(w.capitalize())
+            program_name = " ".join(formatted)
+
             logger.debug(f"[program_discovery] Auto-confirm (slug): {url} -> {program_name}")
-            
+
             return {
                 "program_name": program_name,
                 "degree_level": degree_level,
                 "url": url,
-                "confidence": 0.98,  # very high confidence from URL alone
+                "confidence": 0.98,
             }
     
     # TIER 2: High-confidence pattern (requires fetch)
