@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # ── Phase 2: Program discovery ─────────────────────────────────────────────
     serpapi_key: str = ""
     serpapi_enabled: bool = True
+    # Client-approved scope: 30-50 graduate programs per university.
+    # Midpoint of range. Tune via env var without code changes.
+    max_programs_per_university: int = 40
 
     @property
     def cors_origins_list(self) -> List[str]:

@@ -786,7 +786,8 @@ async def gemini_classify_candidates(
     candidates: list[str],
     university_name: str = "",
     batch_size: int = 12,
-    max_duration_seconds: float = 600.0,  # Raised to 10 minutes for testing
+    max_duration_seconds: float = 600.0,
+    hard_cap: int = 0,  # Stop early once this many programs confirmed (0=no cap)
 ) -> tuple[list[dict], str]:
     """
     Stage 3: Fetch title + snippet for each candidate, then classify in batches.
@@ -1143,6 +1144,16 @@ async def gemini_classify_candidates(
             )
             status = "partial"
             break
+
+        # Early-exit if hard cap reached
+        total_so_far = len(auto_confirmed) + len(confirmed_programs)
+        if hard_cap > 0 and total_so_far >= hard_cap:
+            logger.info(
+                f"[program_discovery] t={elapsed:.1f}s: Discovery cap reached "
+                f"({total_so_far} >= {hard_cap}), skipping remaining Gemini batches"
+            )
+            status = "capped"
+            break
         
         batch = fetched[i:i + batch_size]
         batch_input = [
@@ -1325,6 +1336,31 @@ async def sibling_expansion(
             sibling_candidates.append(loc)
 
     sibling_candidates = [u for u in sibling_candidates if cheap_prefilter(u)]
+
+    # Apply same graduate-only filter as Stage 2.5
+    _UNDERGRAD_SIBLING_SIGNALS = [
+        "/undergraduate/", "/undergrad/", "/bsc-", "/ba-", "/beng-",
+        "/llb-", "/bba-", "/bachelor", "/associate", "/aas-", "/aasn-",
+        "/ags-", "/as-in-", "/bs-in-", "/ba-in-", "/bse-", "/bsn-",
+        "/bba-", "/bsba-",
+    ]
+    sibling_candidates = [
+        u for u in sibling_candidates
+        if not any(s in u.lower() for s in _UNDERGRAD_SIBLING_SIGNALS)
+    ]
+
+    # Cap sibling candidates to 2× remaining headroom
+    from config import settings as _settings
+    cap = _settings.max_programs_per_university
+    remaining = max(0, cap - len(confirmed_programs))
+    sibling_cap = remaining * 2
+    if len(sibling_candidates) > sibling_cap:
+        logger.info(
+            f"[program_discovery] Stage 4: capping siblings {len(sibling_candidates)} → {sibling_cap} "
+            f"({remaining} slots remaining toward cap {cap})"
+        )
+        sibling_candidates = sibling_candidates[:sibling_cap]
+
     logger.info(
         f"[program_discovery] Stage 4: {len(sibling_candidates)} sibling candidates"
     )
@@ -1333,8 +1369,11 @@ async def sibling_expansion(
         return []
 
     # Classify siblings with the same Stage 2+3 pipeline
-    filtered = [u for u in sibling_candidates if cheap_prefilter(u)][:100]
-    return await gemini_classify_candidates(filtered, university_name)
+    filtered = [u for u in sibling_candidates if cheap_prefilter(u)][:sibling_cap]
+    return await gemini_classify_candidates(
+        filtered, university_name,
+        hard_cap=_settings.max_programs_per_university,
+    )
 
 
 # ── Legacy BFS fallback ───────────────────────────────────────────────────────
@@ -1520,6 +1559,59 @@ async def discover_programs(
         logger.warning(f"[program_discovery] No candidates survived pre-filter for {domain}")
         return []
 
+    # ── Stage 2.5: Graduate-only filter ──────────────────────────────────────
+    # Client decision: restrict discovery to graduate programs only.
+    # Drop Bachelor's, Certificate, Associate's, Diploma before any expensive work.
+    # Degree level is inferred from the URL score — undergrad URLs already have
+    # negative net scores from Stage 1.5, so most are gone. This is a belt-and-
+    # suspenders pass to catch anything that slipped through with net score = 0.
+    _GRADUATE_TIERS = {"Master's", "PhD", "MBA", "Doctoral", "Unspecified"}
+    _GRAD_URL_SIGNALS = [
+        "/masters/", "/master/", "/postgraduate/", "/graduate/", "/phd/",
+        "/doctorate/", "/doctoral/", "/msc-", "/ma-", "/mba-", "/llm-",
+        "/mphil-", "/mres-", "/meng-", "/phd-", "/engd-", "/dba-",
+    ]
+    _UNDERGRAD_URL_SIGNALS = [
+        "/undergraduate/", "/undergrad/", "/bsc-", "/ba-", "/beng-",
+        "/llb-", "/bba-", "/bachelor", "/associate",
+    ]
+
+    def _is_likely_graduate(url: str) -> bool:
+        url_lower = url.lower()
+        if any(s in url_lower for s in _UNDERGRAD_URL_SIGNALS):
+            return False
+        # Positive graduate signal found → keep
+        if any(s in url_lower for s in _GRAD_URL_SIGNALS):
+            return True
+        # No strong signal either way → keep (Gemini will decide)
+        return True
+
+    grad_filtered = [u for u in filtered if _is_likely_graduate(u)]
+    dropped_undergrad = len(filtered) - len(grad_filtered)
+    logger.info(
+        f"[program_discovery] Stage 2.5 graduate filter: {len(grad_filtered)} kept "
+        f"({dropped_undergrad} likely-undergrad dropped)"
+    )
+    filtered = grad_filtered
+
+    # ── Stage 2.6: Apply discovery cap before expensive stages ───────────────
+    # Rank by the confidence score already computed. Taking the top N here
+    # means Stage 3 (Gemini) and Stage 4 (siblings) work on a bounded pool.
+    cap = settings.max_programs_per_university
+    # Allow 2× headroom so attrition from Gemini filtering still lands ≥ cap
+    candidate_cap = cap * 2
+    if len(filtered) > candidate_cap:
+        logger.info(
+            f"[program_discovery] Capping candidates: {len(filtered)} → {candidate_cap} "
+            f"(2× headroom over target {cap})"
+        )
+        # Re-score the filtered set (scores were computed pre-filter above)
+        url_to_score = {
+            url: net for url, net, _, _ in scored_candidates
+        }
+        filtered.sort(key=lambda u: url_to_score.get(u, 0.0), reverse=True)
+        filtered = filtered[:candidate_cap]
+
     # ── Stage 3: Gemini classification ───────────────────────────────────────
     # Optional: Skip Gemini if remaining candidates are below threshold
     # Useful when Gemini finds very few programs relative to time cost
@@ -1532,7 +1624,8 @@ async def discover_programs(
         classification_status = "skipped"
     else:
         confirmed, classification_status = await gemini_classify_candidates(
-            filtered, university_name, batch_size=15
+            filtered, university_name, batch_size=15,
+            hard_cap=settings.max_programs_per_university,
         )
 
     if not confirmed:
@@ -1545,12 +1638,19 @@ async def discover_programs(
     logger.info(f"[program_discovery] Stage 3: {len(confirmed)} programs confirmed")
 
     # ── Stage 4: Sibling expansion ────────────────────────────────────────────
-    siblings_result = await sibling_expansion(confirmed, domain, university_name)
-    # sibling_expansion calls gemini_classify_candidates which returns (list, status)
-    siblings = siblings_result[0] if isinstance(siblings_result, tuple) else siblings_result
-    if siblings:
-        logger.info(f"[program_discovery] Stage 4: {len(siblings)} additional siblings")
-        confirmed = confirmed + siblings
+    cap = settings.max_programs_per_university
+    if len(confirmed) >= cap:
+        logger.info(
+            f"[program_discovery] Stage 4 skipped: already at cap "
+            f"({len(confirmed)} >= {cap})"
+        )
+    else:
+        siblings_result = await sibling_expansion(confirmed, domain, university_name)
+        # sibling_expansion calls gemini_classify_candidates which returns (list, status)
+        siblings = siblings_result[0] if isinstance(siblings_result, tuple) else siblings_result
+        if siblings:
+            logger.info(f"[program_discovery] Stage 4: {len(siblings)} additional siblings")
+            confirmed = confirmed + siblings
 
     # ── Deduplicate and cap ───────────────────────────────────────────────────
     seen_urls: set[str] = set()
@@ -1572,10 +1672,10 @@ async def discover_programs(
             "url": prog["url"],
         })
 
-    final = final[:max_programs]
+    final = final[:settings.max_programs_per_university]
     logger.info(
         f"[program_discovery] Final: {len(final)} unique programs for {domain} "
-        f"(capped at {max_programs}, discovered {len(confirmed)} total)"
-        f"(classification_status={classification_status})"
+        f"(target={settings.max_programs_per_university}, discovered={len(confirmed)} total, "
+        f"classification_status={classification_status})"
     )
     return final
