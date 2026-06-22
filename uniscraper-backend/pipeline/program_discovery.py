@@ -1353,6 +1353,10 @@ async def sibling_expansion(
         path = urlparse(url_lower).path
         slug = path.rstrip("/").rsplit("/", 1)[-1]
         slug = slug.rsplit(".", 1)[0] if "." in slug else slug
+        for prefix in ("online-", "on-campus-", "campus-", "part-time-", "full-time-"):
+            if slug.startswith(prefix):
+                slug = slug[len(prefix):]
+                break
         if _UNDERGRAD_SIBLING_RE.match(slug):
             return False
         if any(s in url_lower for s in ["/undergraduate/", "/undergrad/", "/bachelor", "/minors/"]):
@@ -1600,6 +1604,13 @@ async def discover_programs(
         path = urlparse(url_lower).path
         slug = path.rstrip("/").rsplit("/", 1)[-1]
         slug = slug.rsplit(".", 1)[0] if "." in slug else slug
+
+        # Strip common prefixes that obscure the degree code
+        # e.g. "online-bsn-in-nursing" → "bsn-in-nursing"
+        for prefix in ("online-", "on-campus-", "campus-", "part-time-", "full-time-"):
+            if slug.startswith(prefix):
+                slug = slug[len(prefix):]
+                break
 
         # Drop if slug starts with an undergrad/minor prefix
         if _UNDERGRAD_SLUG_RE.match(slug):
