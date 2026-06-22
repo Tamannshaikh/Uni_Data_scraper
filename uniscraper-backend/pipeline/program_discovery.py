@@ -1337,17 +1337,29 @@ async def sibling_expansion(
 
     sibling_candidates = [u for u in sibling_candidates if cheap_prefilter(u)]
 
-    # Apply same graduate-only filter as Stage 2.5
-    _UNDERGRAD_SIBLING_SIGNALS = [
-        "/undergraduate/", "/undergrad/", "/bsc-", "/ba-", "/beng-",
-        "/llb-", "/bba-", "/bachelor", "/associate", "/aas-", "/aasn-",
-        "/ags-", "/as-in-", "/bs-in-", "/ba-in-", "/bse-", "/bsn-",
-        "/bba-", "/bsba-",
-    ]
-    sibling_candidates = [
-        u for u in sibling_candidates
-        if not any(s in u.lower() for s in _UNDERGRAD_SIBLING_SIGNALS)
-    ]
+    # Apply same graduate-only filter as Stage 2.5 (slug-based, not raw substring)
+    _UNDERGRAD_SIBLING_RE = re.compile(
+        r"^(bs|ba|bfa|bme|bse|bsn|bba|bsba|bsrs|bsw|bsed|bsph|bscs|bsis|"
+        r"bsa|bgs|bsce|bsee|bsme|bsie|bsit|bscpe|bscp|bste|bas|"
+        r"beng|bsc|llb|barch|bbe|bmus|bm|bcom|btech|bca|bdes|"
+        r"aas|aasn|ags|as|aa|"
+        r"minor|concentration|track|endorsement"
+        r")([-_]|$|in-)",
+        re.IGNORECASE,
+    )
+
+    def _is_grad_sibling(url: str) -> bool:
+        url_lower = url.lower()
+        path = urlparse(url_lower).path
+        slug = path.rstrip("/").rsplit("/", 1)[-1]
+        slug = slug.rsplit(".", 1)[0] if "." in slug else slug
+        if _UNDERGRAD_SIBLING_RE.match(slug):
+            return False
+        if any(s in url_lower for s in ["/undergraduate/", "/undergrad/", "/bachelor", "/minors/"]):
+            return False
+        return True
+
+    sibling_candidates = [u for u in sibling_candidates if _is_grad_sibling(u)]
 
     # Cap sibling candidates to 2× remaining headroom
     from config import settings as _settings
@@ -1561,29 +1573,45 @@ async def discover_programs(
 
     # ── Stage 2.5: Graduate-only filter ──────────────────────────────────────
     # Client decision: restrict discovery to graduate programs only.
-    # Drop Bachelor's, Certificate, Associate's, Diploma before any expensive work.
-    # Degree level is inferred from the URL score — undergrad URLs already have
-    # negative net scores from Stage 1.5, so most are gone. This is a belt-and-
-    # suspenders pass to catch anything that slipped through with net score = 0.
-    _GRADUATE_TIERS = {"Master's", "PhD", "MBA", "Doctoral", "Unspecified"}
-    _GRAD_URL_SIGNALS = [
-        "/masters/", "/master/", "/postgraduate/", "/graduate/", "/phd/",
-        "/doctorate/", "/doctoral/", "/msc-", "/ma-", "/mba-", "/llm-",
-        "/mphil-", "/mres-", "/meng-", "/phd-", "/engd-", "/dba-",
-    ]
-    _UNDERGRAD_URL_SIGNALS = [
-        "/undergraduate/", "/undergrad/", "/bsc-", "/ba-", "/beng-",
-        "/llb-", "/bba-", "/bachelor", "/associate",
-    ]
+    # Drop Bachelor's, Associate's, Minors, and Concentrations before any
+    # expensive fetch/Gemini work.
+    #
+    # FIX: Previous version used raw substring patterns like "/ba-" which are
+    # UNSAFE — "/ba-" matches "mba-in-marketing" (false positive drops MBA).
+    # "/bsc-" doesn't match "bs-in-accounting" (false negative keeps undergrad).
+    # Solution: match against the LAST PATH SEGMENT (slug) with a regex that
+    # requires the prefix to appear at the START of the slug.
+
+    import re as _re
+
+    _UNDERGRAD_SLUG_RE = _re.compile(
+        r"^(bs|ba|bfa|bme|bse|bsn|bba|bsba|bsrs|bsw|bsed|bsph|bscs|bsis|"
+        r"bsa|bgs|bsce|bsee|bsme|bsie|bsit|bscpe|bscp|bste|bas|"
+        r"beng|bsc|llb|barch|bbe|bmus|bm|bcom|btech|bca|bdes|"
+        r"aas|aasn|ags|as|aa|"
+        r"minor|concentration|track|endorsement"
+        r")([-_]|$|in-)",
+        _re.IGNORECASE,
+    )
 
     def _is_likely_graduate(url: str) -> bool:
         url_lower = url.lower()
-        if any(s in url_lower for s in _UNDERGRAD_URL_SIGNALS):
+        # Extract the last non-empty path segment (the slug), strip extension
+        path = urlparse(url_lower).path
+        slug = path.rstrip("/").rsplit("/", 1)[-1]
+        slug = slug.rsplit(".", 1)[0] if "." in slug else slug
+
+        # Drop if slug starts with an undergrad/minor prefix
+        if _UNDERGRAD_SLUG_RE.match(slug):
             return False
-        # Positive graduate signal found → keep
-        if any(s in url_lower for s in _GRAD_URL_SIGNALS):
-            return True
-        # No strong signal either way → keep (Gemini will decide)
+
+        # Drop structural path segments that are always undergrad
+        _UNDERGRAD_PATH_SEGMENTS = [
+            "/undergraduate/", "/undergrad/", "/bachelor", "/associate/", "/minors/",
+        ]
+        if any(s in url_lower for s in _UNDERGRAD_PATH_SEGMENTS):
+            return False
+
         return True
 
     grad_filtered = [u for u in filtered if _is_likely_graduate(u)]
@@ -1679,3 +1707,4 @@ async def discover_programs(
         f"classification_status={classification_status})"
     )
     return final
+
