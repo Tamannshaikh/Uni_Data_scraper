@@ -304,9 +304,11 @@ def _calculate_simple_confidence(url: str) -> tuple[float, float]:
             positive += 5
             break
 
-    # Mild negative for certificate pages — valid but lower priority than degrees
+    # Mild positive for certificate pages — valid graduate programs, but
+    # lower priority than degrees. Tier sort handles final ranking.
+    # Using +1 (not -3) keeps certs discoverable for cert-only universities.
     if "certificate-in-" in url_lower or "cert-in-" in url_lower:
-        negative += 3
+        positive += 1
     
     # Negative signals - undergraduate (check path segment, not raw substring)
     # Use path segment check to avoid false positives like "mba-" matching "ba-"
