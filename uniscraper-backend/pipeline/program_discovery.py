@@ -902,7 +902,7 @@ async def _call_groq_classify(candidates: list[dict]) -> list[dict]:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "llama-3.1-8b-instant",
+                    "model": "llama-3.1-8b-instant",  # fast, high RPM on Groq free tier
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0,
                     "max_tokens": 2000,
@@ -1318,7 +1318,18 @@ async def gemini_classify_candidates(
                 f"[program_discovery] t={time.time() - start_time:.1f}s: "
                 f"Using Groq for batch {gemini_calls} (Gemini quota exhausted)"
             )
-            results = await _call_groq_classify(batch_input)
+            await asyncio.sleep(4.0)  # avoid Groq per-minute rate limit (~30 req/min free tier)
+            # Use smaller sub-batches for Groq to stay within token-per-minute limits
+            groq_results: list[dict] = []
+            for sub_i in range(0, len(batch_input), 6):
+                sub_batch = batch_input[sub_i:sub_i + 6]
+                sub_result = await _call_groq_classify(sub_batch)
+                if not sub_result:
+                    break
+                groq_results.extend(sub_result)
+                if sub_i + 6 < len(batch_input):
+                    await asyncio.sleep(3.0)  # gap between sub-batches
+            results = groq_results if groq_results else []
             if not results:
                 status = "partial"
                 break
