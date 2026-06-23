@@ -567,10 +567,10 @@ def _is_likely_directory_page(url: str, word_count: int = 0) -> bool:
     Directory pages should be expanded (extract child links) rather than classified
     as single programs.
     
-    Detection signals:
-    - URL patterns: /graduate-programs/, /program-search/, /catalog/
-    - Catalog domains: catalog.university.edu
-    - Long pages: catalog pages typically have 2000+ words
+    Detection signals (in priority order):
+    1. Strong URL patterns: /graduate-programs/, /program-search/, /catalog/
+    2. Catalog domains: catalog.university.edu
+    3. Weak: Very long pages with many links (>4000 words as secondary signal)
     
     Returns:
         True if likely a directory page (needs expansion)
@@ -578,19 +578,24 @@ def _is_likely_directory_page(url: str, word_count: int = 0) -> bool:
     """
     url_lower = url.lower()
     
+    # Strong directory URL signals (primary detection)
     DIRECTORY_PAGE_SIGNALS = [
         "graduate-programs", "program-search", "catalog",
         "all-programs", "programs-of-study", "degree-requirements",
-        "graduate-degrees", "course-list",
+        "graduate-degrees", "course-list", "graduateschools",
     ]
     
-    has_signal = any(s in url_lower for s in DIRECTORY_PAGE_SIGNALS)
-    is_long = word_count > 2000  # Catalog pages are long; individual programs are typically shorter
+    has_strong_signal = any(s in url_lower for s in DIRECTORY_PAGE_SIGNALS)
     
-    return has_signal or is_long
+    # Word count is a weak secondary signal
+    # Many genuine program pages are long (3000+ words with requirements, funding, etc.)
+    # Only use as fallback with very high threshold
+    is_very_long = word_count > 4000  # Raised from 2000 to avoid false positives
+    
+    return has_strong_signal or is_very_long
 
 
-async def _expand_directory_page(url: str, html: str) -> list[str]:
+async def _expand_directory_page(url: str, html: str) -> tuple[list[str], dict]:
     """
     Extract outbound program links from a directory/catalog page.
     
@@ -599,11 +604,22 @@ async def _expand_directory_page(url: str, html: str) -> list[str]:
         html: The fetched HTML content
     
     Returns:
-        List of extracted program URLs (capped at 50 per directory)
+        Tuple of (extracted_urls, stats_dict)
+        - extracted_urls: List of extracted program URLs (capped at 50)
+        - stats_dict: Statistics for logging/debugging
     """
+    stats = {
+        "total_links": 0,
+        "filtered_keywords": 0,
+        "filtered_junk": 0,
+        "duplicates": 0,
+        "extracted": 0,
+    }
+    
     try:
         soup = BeautifulSoup(html, 'lxml')
         links = soup.find_all('a', href=True)
+        stats["total_links"] = len(links)
         
         extracted_urls = []
         seen = set()
@@ -614,6 +630,16 @@ async def _expand_directory_page(url: str, html: str) -> list[str]:
             'phd', 'doctorate', 'doctoral',
             'graduate', 'postgraduate',
             'program', 'degree',
+        ]
+        
+        # Junk patterns to reject (navigation, admin, etc.)
+        JUNK_PATTERNS = [
+            r'/search', r'/print', r'/help', r'/contact',
+            r'/login', r'/logout', r'/index\.php$', r'/home',
+            r'/sitemap', r'/rss', r'/feed',
+            r'\.pdf$', r'\.doc', r'\.ppt',
+            r'/previous', r'/next', r'/back',
+            r'/navigation', r'/menu',
         ]
         
         for link in links:
@@ -627,8 +653,14 @@ async def _expand_directory_page(url: str, html: str) -> list[str]:
             # Deduplicate
             norm_url = _normalize_url(abs_url)
             if norm_url in seen:
+                stats["duplicates"] += 1
                 continue
             seen.add(norm_url)
+            
+            # Reject junk patterns
+            if any(re.search(pat, abs_url.lower()) for pat in JUNK_PATTERNS):
+                stats["filtered_junk"] += 1
+                continue
             
             # Filter: Keep links that look like programs
             link_text = link.get_text(' ', strip=True).lower()
@@ -637,16 +669,18 @@ async def _expand_directory_page(url: str, html: str) -> list[str]:
             # Check if link or URL contains program-related keywords
             if any(kw in url_lower or kw in link_text for kw in PROGRAM_LINK_KEYWORDS):
                 extracted_urls.append(abs_url)
+                stats["filtered_keywords"] += 1
             
             # Cap at 50 links per directory to avoid runaway growth
             if len(extracted_urls) >= 50:
                 break
         
-        return extracted_urls
+        stats["extracted"] = len(extracted_urls)
+        return extracted_urls, stats
     
     except Exception as e:
         logger.debug(f"[program_discovery] Directory expansion error for {url}: {e}")
-        return []
+        return [], stats
 
 
 _OBVIOUS_JUNK = [
@@ -1483,36 +1517,81 @@ async def gemini_classify_candidates(
         )
         
         expanded_urls = set()
+        all_stats = {
+            "total_links": 0,
+            "filtered_keywords": 0,
+            "filtered_junk": 0,
+            "duplicates": 0,
+            "extracted": 0,
+        }
+        
         for dir_page in directory_pages:
             url = dir_page["url"]
             # Re-fetch to get full HTML (not just snippet)
             html, status = await _fetch_html(url, timeout=8.0)
             if status == 200 and html:
-                child_urls = await _expand_directory_page(url, html)
+                child_urls, stats = await _expand_directory_page(url, html)
                 expanded_urls.update(child_urls)
+                
+                # Aggregate stats
+                for key in all_stats:
+                    all_stats[key] += stats.get(key, 0)
+                
                 logger.info(
-                    f"[program_discovery] Directory expansion: {url[:60]} → "
-                    f"{len(child_urls)} child links extracted"
+                    f"[program_discovery] Directory expansion: {url[:60]}"
                 )
+                logger.info(
+                    f"  → {stats['extracted']} extracted from {stats['total_links']} links "
+                    f"(filtered: {stats['filtered_junk']} junk, {stats['duplicates']} dupes)"
+                )
+                
+                # Show first 10 extracted URLs for inspection
+                if child_urls:
+                    logger.info(f"  → Sample extracted URLs (first 5):")
+                    for i, child_url in enumerate(child_urls[:5], 1):
+                        logger.info(f"      {i}. {child_url}")
         
         if expanded_urls:
             # Filter expanded URLs through prefilter and graduate filter
             expanded_filtered = [u for u in expanded_urls if cheap_prefilter(u)]
+            filtered_out = len(expanded_urls) - len(expanded_filtered)
+            
             logger.info(
-                f"[program_discovery] Expanded URLs: {len(expanded_urls)} total, "
-                f"{len(expanded_filtered)} passed prefilter"
+                f"[program_discovery] Directory expansion summary:"
+            )
+            logger.info(
+                f"  Total links found: {all_stats['total_links']}"
+            )
+            logger.info(
+                f"  Filtered by keywords: {all_stats['filtered_keywords']}"
+            )
+            logger.info(
+                f"  Filtered as junk: {all_stats['filtered_junk']}"
+            )
+            logger.info(
+                f"  Duplicates: {all_stats['duplicates']}"
+            )
+            logger.info(
+                f"  Extracted unique: {len(expanded_urls)}"
+            )
+            logger.info(
+                f"  Passed prefilter: {len(expanded_filtered)} ({filtered_out} filtered out)"
             )
             
             # Add to needs_gemini list for classification
             # (they'll be classified in subsequent batches)
             existing_urls = {c["url"] for c in fetched}
             new_candidates = [u for u in expanded_filtered if u not in existing_urls]
+            duplicates_with_existing = len(expanded_filtered) - len(new_candidates)
+            
+            logger.info(
+                f"  Duplicates with existing: {duplicates_with_existing}"
+            )
+            logger.info(
+                f"  New candidates to classify: {len(new_candidates)}"
+            )
             
             if new_candidates:
-                logger.info(
-                    f"[program_discovery] Adding {len(new_candidates)} new candidates from "
-                    f"directory expansion to classification queue"
-                )
                 # Fetch these new candidates
                 expansion_fetch_results = await asyncio.gather(
                     *[fetch_candidate_info(u) for u in new_candidates[:50]],  # Cap at 50
