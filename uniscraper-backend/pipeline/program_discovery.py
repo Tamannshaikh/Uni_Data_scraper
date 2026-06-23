@@ -1463,7 +1463,29 @@ async def gemini_classify_candidates(
                     gemini_available = False
                     # Use heuristic classification instead of stopping
                     results = []
+                    
+                    # Event/news rejection patterns - hard veto BEFORE any heuristic check
+                    EVENT_NEWS_REJECT_PATTERNS = [
+                        r"/seminar", r"/lecture", r"/event", r"/workshop",
+                        r"/talk/", r"/webinar", r"/news/", r"/article",
+                        r"/happenings", r"/colloquium", r"/symposium",
+                        r"/blog/", r"/stories?/", r"/testimonial",
+                    ]
+                    
+                    rejected_count = 0
                     for j, candidate in enumerate(batch):
+                        url_lower = candidate["url"].lower()
+                        
+                        # HARD REJECT: Event/news/seminar pages
+                        # This is a correctness veto, not a scoring adjustment
+                        if any(re.search(p, url_lower, re.I) for p in EVENT_NEWS_REJECT_PATTERNS):
+                            rejected_count += 1
+                            logger.debug(
+                                f"[program_discovery] Heuristic fallback rejected (event/news): "
+                                f"{candidate['url'][:80]}"
+                            )
+                            continue
+                        
                         degree_level = _fallback_degree_level(candidate["url"], candidate["title"])
                         # Only accept recognized graduate degree patterns
                         if degree_level in ["Master's", "PhD", "Certificate"]:
@@ -1476,7 +1498,7 @@ async def gemini_classify_candidates(
                             })
                     logger.info(
                         f"[program_discovery] Heuristic fallback classified {len(results)}/{len(batch)} "
-                        f"as programs (confidence=0.70)"
+                        f"as programs (confidence=0.70, rejected {rejected_count} event/news pages)"
                     )
 
             timings["gemini_api_time"] += gemini_api_duration
