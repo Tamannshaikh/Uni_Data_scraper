@@ -36,7 +36,7 @@ async def _track_usage() -> None:
             return_document=True,
         )
         count = result.get("call_count", 1) if result else 1
-        if count >= 80:
+        if count >= 70:  # Adjusted for 6 queries/university (70 = ~11 universities)
             logger.warning(
                 f"[serpapi_client] Approaching free tier limit: {count} calls this month ({month})"
             )
@@ -49,16 +49,24 @@ async def search_program_pages(domain: str, university_name: str) -> list[str]:
     Use SerpAPI to find program listing pages on a domain that's blocking
     direct HEAD/GET requests (e.g. behind Cloudflare).
     Returns a list of candidate URLs to verify and use as BFS seeds.
-    Runs up to 2 queries to maximize results while staying within free tier.
+    
+    Runs 6 targeted queries @ 30 results each = max 180 URLs (after dedup ~100-150).
+    This uses 6 API calls per university.
+    With 100 calls/month free tier, budget for ~16 universities/month.
     """
     if not settings.serpapi_key or not settings.serpapi_enabled:
         logger.warning("[serpapi_client] No SERPAPI_KEY configured or disabled")
         return []
 
-    # Two targeted queries: one for graduate/masters individual pages, one for general index
+    # Multiple targeted queries to maximize discovery (increased from 2 to 6)
+    # Each query targets different program page patterns
     queries = [
-        f'site:{domain} (masters OR phd OR "master of" OR msc OR mba) program',
-        f'site:{domain} (programs OR courses OR degrees OR study OR graduate)',
+        f'site:{domain} (masters OR "master of" OR msc OR ma) programs',
+        f'site:{domain} (phd OR doctoral OR doctorate) programs',
+        f'site:{domain} (mba OR "executive mba") programs',
+        f'site:{domain} (graduate programs OR graduate degrees)',
+        f'site:{domain} (catalog graduate OR degree requirements)',
+        f'site:{domain} (courses OR programmes) postgraduate',
     ]
 
     all_urls: list[str] = []
@@ -72,7 +80,7 @@ async def search_program_pages(domain: str, university_name: str) -> list[str]:
                     params={
                         "q": query,
                         "api_key": settings.serpapi_key,
-                        "num": 10,
+                        "num": 30,  # Increased from 10 to 30 for better coverage
                         "engine": "google",
                     },
                 )

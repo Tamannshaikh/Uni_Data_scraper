@@ -550,7 +550,9 @@ _OBVIOUS_JUNK = [
     "/scholarships", "/housing", "/campus-map",
     "/registrar", "/graduation",
     # Additional noise patterns for student/cohort/profile pages
-    "/graduates/", "/graduate/",  # Graduate profiles/stories (not program pages)
+    # NOTE: Using specific path segments to avoid false positives
+    # e.g., "/graduates/" not "/graduate/" to preserve "/graduate/programs/"
+    "/graduates/",                # Graduate profiles/stories pages
     "/students/", "/student/",    # Student profiles/stories
     "/cohort/", "/cohorts/",      # Cohort/class pages  
     "/people/", "/person/",       # People directory
@@ -558,7 +560,10 @@ _OBVIOUS_JUNK = [
     "/testimonials/",             # Student testimonials
     "/stories/", "/story/",       # Student stories
     "/directory/",                # Directory pages
-    "/apply/", "/application/",   # Application process pages (not program pages)
+    # More specific patterns for noise pages (not broad /graduate/ or /apply/)
+    "/current-students/", "/prospective-students/",
+    "/meet-our-students/", "/student-profiles/",
+    "/alumni-profiles/", "/alumni-stories/",
 ]
 
 # Subdomains that are never program pages
