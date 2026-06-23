@@ -415,10 +415,29 @@ def _calculate_simple_confidence(url: str) -> tuple[float, float]:
             negative += 10
     
     # Negative signals - non-program pages
+    # HEAVY PENALTIES to override positive signals from /phd/, /masters/ etc.
+    # These patterns indicate pages ABOUT programs, not program pages themselves
+    NEGATIVE_SCORE_PATTERNS = {
+        r"/faq": 15,
+        r"/admissions": 10,
+        r"/cohort/": 20,
+        r"/graduates?/": 25,  # Most severe - graduate profiles
+        r"/students?/": 15,
+        r"/people/": 15,
+        r"/faculty/": 15,
+        r"/events?/": 15,
+        r"/seminar": 20,
+        r"/news/": 20,
+    }
+    
+    for pattern, penalty in NEGATIVE_SCORE_PATTERNS.items():
+        if re.search(pattern, url_lower):
+            negative += penalty
+    
+    # Additional lighter penalties for other non-program hints
     non_program_hints = [
         "/research-areas/", "/funding/", "/scholarships/",
-        "/admissions/", "/staff/", "/faculty/", "/news/",
-        "/events/", "/blog/", "/about/"
+        "/staff/", "/blog/", "/about/"
     ]
     for hint in non_program_hints:
         if hint in url_lower:
