@@ -568,31 +568,57 @@ def _is_likely_directory_page(url: str, word_count: int = 0) -> bool:
     as single programs.
     
     Detection signals (in priority order):
-    1. Strong URL patterns: /graduate-programs/, /program-search/, /catalog/
-    2. Catalog domains: catalog.university.edu
-    3. Weak: Very long pages with many links (>4000 words as secondary signal)
+    1. Strong URL patterns that indicate LISTING pages:
+       - /graduate-programs/ (plural, listing many programs)
+       - /program-search/ (search interface for programs)
+       - /all-programs/ (explicit listing page)
+    2. Avoid false positives:
+       - catalog.edu/content.php are usually policy documents, NOT program lists
+       - Very long pages could be detailed single programs with lots of info
+    
+    CAUTION: Many pages that MENTION programs are not program LISTING pages:
+    - Admissions pages
+    - Policy documents  
+    - FAQ pages
+    - Requirements/procedures pages
     
     Returns:
         True if likely a directory page (needs expansion)
-        False if likely a single program page (needs classification)
+        False if likely a single program page (needs classification) or admin page
     """
     url_lower = url.lower()
     
     # Strong directory URL signals (primary detection)
+    # These are LISTING pages that contain links to multiple program pages
     DIRECTORY_PAGE_SIGNALS = [
-        "graduate-programs", "program-search", "catalog",
-        "all-programs", "programs-of-study", "degree-requirements",
-        "graduate-degrees", "course-list", "graduateschools",
+        "/graduate-programs/",     # Plural listing page
+        "/program-search/",        # Search/browse interface
+        "/all-programs/",          # Explicit "all programs" listing
+        "/programs-of-study/",     # Listing of available programs
+        "/degree-finder/",         # Search tool
+        "/find-a-program/",        # Search tool
     ]
     
+    # EXCLUDE patterns - these are NOT program listing pages despite similar names
+    EXCLUDE_PATTERNS = [
+        "/content.php",            # Usually policy/admin docs, not program lists
+        "/admissions/",            # Admissions info, not program listings
+        "/requirements/",          # Requirements docs, not program lists
+        "/policies/",              # Policy documents
+        "/faq",                    # FAQ pages
+    ]
+    
+    # Check for exclusions first
+    if any(pattern in url_lower for pattern in EXCLUDE_PATTERNS):
+        return False
+    
+    # Check for strong directory signals
     has_strong_signal = any(s in url_lower for s in DIRECTORY_PAGE_SIGNALS)
     
-    # Word count is a weak secondary signal
-    # Many genuine program pages are long (3000+ words with requirements, funding, etc.)
-    # Only use as fallback with very high threshold
-    is_very_long = word_count > 4000  # Raised from 2000 to avoid false positives
+    # Word count is removed as a signal - many genuine programs are long
+    # Only rely on explicit URL patterns to avoid false positives
     
-    return has_strong_signal or is_very_long
+    return has_strong_signal
 
 
 async def _expand_directory_page(url: str, html: str) -> tuple[list[str], dict]:
@@ -625,21 +651,50 @@ async def _expand_directory_page(url: str, html: str) -> tuple[list[str], dict]:
         seen = set()
         
         # Degree-related keywords to filter links
-        PROGRAM_LINK_KEYWORDS = [
-            'master', 'msc', 'ma', 'mba', 'ms',
-            'phd', 'doctorate', 'doctoral',
-            'graduate', 'postgraduate',
-            'program', 'degree',
+        # Require SPECIFIC degree identifiers, not just "graduate" or "program"
+        DEGREE_KEYWORDS = [
+            'msc-', 'ma-', 'mba-', 'ms-', 'mres-', 'med-', 'mph-', 'meng-',
+            'phd-', 'doctorate-', 'doctoral-',
+            'master-of-', 'masters-in-', 'phd-in-',
+            # Path segments
+            '/msc/', '/ma/', '/mba/', '/ms/', '/phd/',
+            '/masters/', '/master/',
+        ]
+        
+        PROGRAM_KEYWORDS = [
+            'program/', 'programme/', 'degree/',
+            '/courses/', '/studies/',
         ]
         
         # Junk patterns to reject (navigation, admin, etc.)
+        # HEAVILY expanded based on actual junk from catalog pages
         JUNK_PATTERNS = [
+            # Navigation/UI elements
             r'/search', r'/print', r'/help', r'/contact',
             r'/login', r'/logout', r'/index\.php$', r'/home',
             r'/sitemap', r'/rss', r'/feed',
-            r'\.pdf$', r'\.doc', r'\.ppt',
             r'/previous', r'/next', r'/back',
             r'/navigation', r'/menu',
+            # Documents
+            r'\.pdf$', r'\.doc', r'\.ppt', r'\.xls',
+            # Social/external links
+            r'facebook\.com', r'twitter\.com', r'linkedin\.com',
+            r'instagram\.com', r'youtube\.com',
+            r'/sharer/', r'/share/', r'teamstore\.com',
+            # Administrative pages (very common in catalog pages)
+            r'/registrar/', r'/admissions/', r'/financial',
+            r'/tuition', r'/fees/', r'/forms/',
+            r'/policies/', r'/calendar/', r'/scheduling/',
+            r'/grading', r'/transcript', r'/enrollment',
+            r'/graduation/', r'/commencement/',
+            # General info pages
+            r'/about', r'/overview', r'/mission',
+            r'/history', r'/directory', r'/staff',
+            r'/faculty-directory', r'/leadership',
+            # Student services
+            r'/housing', r'/dining', r'/parking',
+            r'/health', r'/wellness', r'/safety',
+            r'/career', r'/alumni',
         ]
         
         for link in links:
@@ -666,8 +721,12 @@ async def _expand_directory_page(url: str, html: str) -> tuple[list[str], dict]:
             link_text = link.get_text(' ', strip=True).lower()
             url_lower = abs_url.lower()
             
-            # Check if link or URL contains program-related keywords
-            if any(kw in url_lower or kw in link_text for kw in PROGRAM_LINK_KEYWORDS):
+            # Check if link contains degree-specific keywords (not just "graduate" or "program")
+            has_degree = any(kw in url_lower or kw in link_text for kw in DEGREE_KEYWORDS)
+            has_program_context = any(kw in url_lower for kw in PROGRAM_KEYWORDS)
+            
+            # Only keep URLs that have clear degree identifiers OR degree+program context
+            if has_degree or (has_program_context and any(d in url_lower for d in ['master', 'phd', 'doctorate'])):
                 extracted_urls.append(abs_url)
                 stats["filtered_keywords"] += 1
             
@@ -681,6 +740,102 @@ async def _expand_directory_page(url: str, html: str) -> tuple[list[str], dict]:
     except Exception as e:
         logger.debug(f"[program_discovery] Directory expansion error for {url}: {e}")
         return [], stats
+
+
+async def _expand_landing_pages_by_anchor_text(
+    landing_pages: list[dict], university_name: str = ""
+) -> list[str]:
+    """
+    Extract program URLs from LANDING pages using ANCHOR TEXT matching.
+    
+    Landing pages (e.g., "Our PhD Programs", "Master's Degrees") list multiple programs.
+    We extract links whose anchor text looks like a degree name.
+    
+    Strategy (per user feedback):
+    - Focus on ANCHOR TEXT, not URL keywords
+    - Look for patterns like "Computer Science, MS" or "Mechanical Engineering, PhD"
+    - Anchor text is far more reliable than URLs on university sites
+    
+    Args:
+        landing_pages: List of landing page candidates with url/html
+        university_name: University name for filtering
+    
+    Returns:
+        List of extracted program URLs
+    """
+    # Degree name patterns (match anchor text, not URLs)
+    DEGREE_PATTERNS = [
+        r'\bM\.?S\.?\b', r'\bM\.?Sc\.?\b', r'\bM\.?A\.?\b',
+        r'\bMBA\b', r'\bM\.?B\.?A\.?\b',
+        r'\bPh\.?D\.?\b', r'\bDoctor of\b',
+        r'\bMaster of\b', r'\bMasters? in\b',
+        r'\bDoctoral\b', r'\bDoctorate\b',
+        # Less common but valid
+        r'\bM\.?Eng\.?\b', r'\bM\.?Phil\.?\b', r'\bLL\.?M\.?\b',
+        r'\bM\.?Res\.?\b', r'\bM\.?Ed\.?\b', r'\bM\.?F\.?A\.?\b',
+        r'\bM\.?P\.?H\.?\b', r'\bM\.?P\.?A\.?\b',
+    ]
+    
+    extracted_urls = []
+    
+    for landing_page in landing_pages:
+        url = landing_page["url"]
+        logger.info(f"[program_discovery] Expanding landing page: {url[:70]}")
+        
+        # Fetch full HTML if not already present
+        html = landing_page.get("html")
+        if not html:
+            html, status = await _fetch_html(url, timeout=8.0)
+            if status != 200 or not html:
+                logger.debug(f"[program_discovery] Failed to fetch landing page: {url}")
+                continue
+        
+        try:
+            soup = BeautifulSoup(html, 'lxml')
+            links = soup.find_all('a', href=True)
+            
+            page_extracted = 0
+            for link in links:
+                href = link.get('href', '').strip()
+                if not href or href.startswith('#') or href.startswith('javascript:'):
+                    continue
+                
+                # Get anchor text
+                anchor_text = link.get_text(' ', strip=True)
+                if not anchor_text or len(anchor_text) < 5:
+                    continue
+                
+                # Check if anchor text looks like a degree name
+                # Examples: "Computer Science, MS", "PhD in Chemistry", "Master of Business"
+                matches_degree_pattern = any(
+                    re.search(pattern, anchor_text, re.IGNORECASE)
+                    for pattern in DEGREE_PATTERNS
+                )
+                
+                if matches_degree_pattern:
+                    abs_url = urljoin(url, href)
+                    extracted_urls.append(abs_url)
+                    page_extracted += 1
+                    logger.debug(
+                        f"[program_discovery]   → Found: '{anchor_text[:60]}' → {abs_url[:60]}"
+                    )
+                    
+                    # Cap per page
+                    if page_extracted >= 30:
+                        break
+            
+            logger.info(
+                f"[program_discovery]   Extracted {page_extracted} programs from landing page"
+            )
+        
+        except Exception as e:
+            logger.debug(f"[program_discovery] Error expanding landing page {url}: {e}")
+            continue
+    
+    # Deduplicate
+    extracted_urls = list(dict.fromkeys(extracted_urls))
+    
+    return extracted_urls
 
 
 _OBVIOUS_JUNK = [
@@ -962,35 +1117,39 @@ async def _auto_confirm_candidate(url: str, university_name: str) -> dict | None
 
 
 _CLASSIFICATION_PROMPT = """\
-You are validating university academic program pages.
+You are classifying university web pages by type.
 
 For EACH page below, determine:
 1. index: MUST include the exact index number from the input (CRITICAL for matching)
-2. is_program: true ONLY if this page is specifically about ONE degree/academic program
-   Examples of TRUE: "MSc Data Science", "BA English Literature", "PhD Chemistry"
-   Examples of FALSE:
-   - General admissions pages ("Applying to Graduate School")
-   - Department homepages ("School of Engineering")
-   - Blog posts or student stories ("Why I chose to study...")
-   - News or events pages
-   - Listing pages showing multiple programs
-   - Financial aid, tuition, or fees pages
-   - "Why study at Manchester?", "Campus tours", "Widening participation"
-3. program_name: the specific program name if is_program=true, otherwise null
-4. degree_level: one of "Bachelor's", "Master's", "PhD", "Doctoral", "Certificate",
+2. page_type: one of:
+   - "PROGRAM" = page describes ONE specific degree/program (e.g., "MSc Data Science", "PhD Chemistry")
+   - "LANDING" = page lists/introduces MULTIPLE programs (e.g., "Our PhD Programs", "Master's Degrees")
+   - "ADMIN" = admissions, tuition, fees, how to apply, financial aid, policies
+   - "DEPARTMENT" = department homepage, faculty list, research areas
+   - "NEWS" = blog posts, student stories, events, news articles
+   - "OTHER" = anything else
+3. is_program: true if page_type is "PROGRAM", false otherwise
+4. program_name: the specific program name if page_type="PROGRAM", otherwise null
+5. degree_level: one of "Bachelor's", "Master's", "PhD", "Doctoral", "Certificate",
    "Associate's", "Diploma", "MBA", "Unspecified" — based ONLY on what's stated
-5. confidence: 0.0 to 1.0 — how confident you are this is an individual program page
+6. confidence: 0.0 to 1.0 — confidence in your page_type classification
 
-RULES:
+Examples:
+- Title "A Purdue PhD" with text "Our PhD programs... Economics... Management..." → page_type="LANDING"
+- Title "Specialized Master's Programs" listing 6 programs → page_type="LANDING"
+- Title "MSc Computer Science" with admission requirements → page_type="PROGRAM"
+- Title "How to Apply" with application deadlines → page_type="ADMIN"
+- Title "School of Engineering" with faculty directory → page_type="DEPARTMENT"
+
+CRITICAL RULES:
 - ALWAYS include the "index" field matching the input index
-- A blog post about studying a degree is NOT a program page
-- A page titled "Clearing" or "How to Apply" is NOT a program page  
-- A page about ONE specific course/program with its own requirements IS a program page
-- Do NOT invent program names
+- If a page lists MULTIPLE programs, it's "LANDING", not "PROGRAM"
+- Landing pages are VALUABLE - they lead to individual programs
+- Only mark as "PROGRAM" if page is about ONE specific degree
 - Use "Unspecified" rather than guessing degree level
 
 Return ONLY a JSON array, one object per page, same order as input. 
-Each object MUST include: index, is_program, program_name, degree_level, confidence
+Each object MUST include: index, page_type, is_program, program_name, degree_level, confidence
 No markdown, no explanation.
 
 Pages:
@@ -1406,6 +1565,7 @@ async def gemini_classify_candidates(
                     "title": title,
                     "snippet": snippet,
                     "url_confidence": confidence,
+                    "html": html,  # Store HTML for landing page expansion
                 }
             except Exception as exc:
                 url_duration = time.time() - url_start
@@ -1621,6 +1781,7 @@ async def gemini_classify_candidates(
     )
     
     confirmed_programs: list[dict] = []
+    landing_pages_to_expand: list[dict] = []  # Pages that list multiple programs
     gemini_calls = 0
     candidates_processed = 0
     status = "success"  # assume success unless we hit time limit
@@ -1791,6 +1952,7 @@ async def gemini_classify_candidates(
             # Get candidate from batch
             candidate = batch[idx]
             url = candidate["url"]
+            page_type = result.get("page_type", "OTHER")
             is_program = result.get("is_program", False)
             confidence = float(result.get("confidence", 0))
             degree_level = result.get("degree_level") or "Unknown"
@@ -1798,9 +1960,15 @@ async def gemini_classify_candidates(
             
             logger.info(
                 f"[program_discovery] LLM result: {url[:80]} | "
-                f"is_program={is_program} | confidence={confidence:.2f} | "
+                f"type={page_type} | is_program={is_program} | confidence={confidence:.2f} | "
                 f"degree={degree_level} | name={program_name[:40] if program_name else 'N/A'}"
             )
+            
+            # Handle LANDING pages - expand them to find individual programs
+            if page_type == "LANDING":
+                logger.info(f"[program_discovery] ** LANDING page detected, will expand: {url[:80]}")
+                landing_pages_to_expand.append(candidate)
+                continue
             
             if not is_program:
                 logger.debug(f"[program_discovery] Rejected (not a program): {url[:80]}")
@@ -1886,6 +2054,37 @@ async def gemini_classify_candidates(
             f"[program_discovery] Stage 3: {overhead:.1f}s unaccounted overhead detected! "
             f"Check for sequential operations or hidden waits."
         )
+    
+    # Step 3.5: Expand LANDING pages (pages that list multiple programs)
+    if landing_pages_to_expand:
+        logger.info(
+            f"[program_discovery] ** Expanding {len(landing_pages_to_expand)} LANDING pages "
+            f"(pages that list multiple programs)"
+        )
+        landing_expanded_urls = await _expand_landing_pages_by_anchor_text(
+            landing_pages_to_expand, university_name
+        )
+        
+        if landing_expanded_urls:
+            logger.info(
+                f"[program_discovery] Landing page expansion extracted {len(landing_expanded_urls)} program URLs"
+            )
+            # Add to confirmed programs (these are high-confidence since they came from landing pages)
+            for url in landing_expanded_urls[:20]:  # Cap at 20 to avoid runaway growth
+                # Try auto-confirm pattern matching first
+                title = ""  # Will be fetched if needed
+                program_name = _clean_program_name(title or url.split("/")[-1], university_name)
+                degree_level = _fallback_degree_level(url, title)
+                
+                confirmed_programs.append({
+                    "program_name": program_name,
+                    "degree_level": degree_level,
+                    "url": url,
+                    "confidence": 0.85,  # High confidence from landing page
+                })
+                logger.info(
+                    f"[program_discovery] + Added from landing page: {program_name} ({degree_level})"
+                )
     
     # Step 4: Combine auto-confirmed + Gemini-confirmed
     all_programs = auto_confirmed + confirmed_programs
