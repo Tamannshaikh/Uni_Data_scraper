@@ -51,19 +51,21 @@ def _normalize_url(url: str) -> str:
         return url
 
 
-async def _fetch_html(url: str, timeout: float = 5.0) -> tuple[str, int]:
+async def _fetch_html(url: str, timeout: float = 5.0, use_firecrawl_fallback: bool = True) -> tuple[str, int]:
     """
-    Fetch HTML content from URL with aggressive timeout for discovery.
+    Fetch HTML content from URL with Firecrawl fallback for bot protection.
     
-    For discovery, we want fast responses. Pages that don't load quickly
-    are unlikely to be useful program pages.
+    Strategy:
+    1. Try HTTPX first (fast, cheap)
+    2. If 403/429/Cloudflare/short_content → immediately try Firecrawl
+    3. Return best available result
     
     Returns: (html_content, status_code)
     - On success: (html, 200)
     - On timeout/error: ("", 0)
     """
+    # Try HTTPX first
     try:
-        # Use granular timeouts: connect=3s, read=5s
         timeout_config = httpx.Timeout(
             connect=3.0,
             read=timeout,
@@ -76,24 +78,71 @@ async def _fetch_html(url: str, timeout: float = 5.0) -> tuple[str, int]:
         ) as client:
             r = await client.get(url)
             html = r.text
-            
-            # Log extraction details for debugging "no_content" failures
             text_length = len(html)
             word_count = len(html.split())
             
-            if text_length == 0:
-                logger.debug(f"[program_discovery] fetch returned empty HTML: {url}")
+            # Success criteria
+            if r.status_code == 200 and word_count >= 50:
+                logger.debug(f"[program_discovery] HTTPX success: {url} ({word_count} words)")
+                return html, r.status_code
+            
+            # Bot protection or deferred content detected
+            if r.status_code in [202, 403, 429] and use_firecrawl_fallback:
+                logger.info(
+                    f"[program_discovery] HTTPX {r.status_code} detected for {url[:80]}, "
+                    f"trying Firecrawl..."
+                )
+                return await _fetch_with_firecrawl(url)
+            
+            # Short content (likely bot protection returning minimal HTML)
+            if r.status_code == 200 and word_count < 50 and use_firecrawl_fallback:
+                logger.info(f"[program_discovery] HTTPX short content ({word_count} words) for {url}, trying Firecrawl...")
+                return await _fetch_with_firecrawl(url)
+            
+            # Other non-200 status
+            if r.status_code != 200:
+                logger.debug(f"[program_discovery] HTTPX status {r.status_code}: {url}")
             
             return html, r.status_code
             
     except httpx.TimeoutException as e:
-        logger.debug(f"[program_discovery] fetch timeout ({timeout}s): {url} - {type(e).__name__}")
+        logger.debug(f"[program_discovery] HTTPX timeout ({timeout}s): {url}")
         return "", 0
     except httpx.ConnectError as e:
-        logger.debug(f"[program_discovery] fetch connection error: {url} - {e}")
+        logger.debug(f"[program_discovery] HTTPX connection error: {url}")
         return "", 0
     except Exception as e:
-        logger.debug(f"[program_discovery] fetch error {url}: {type(e).__name__}: {e}")
+        logger.debug(f"[program_discovery] HTTPX error {url}: {type(e).__name__}: {e}")
+        return "", 0
+
+
+async def _fetch_with_firecrawl(url: str) -> tuple[str, int]:
+    """
+    Fetch URL using Firecrawl (bypasses bot protection).
+    Returns: (html_content, status_code)
+    """
+    try:
+        from pipeline.tier2_firecrawl import fetch_single_page
+        
+        result = await fetch_single_page(url)
+        
+        if result.get("error"):
+            logger.warning(f"[program_discovery] Firecrawl error for {url}: {result['error']}")
+            return "", 0
+        
+        # Prefer HTML, fallback to markdown
+        html = result.get("html") or result.get("markdown") or ""
+        word_count = result.get("word_count", 0)
+        
+        if word_count >= 50:
+            logger.info(f"[program_discovery] Firecrawl success: {url} ({word_count} words)")
+            return html, 200
+        else:
+            logger.debug(f"[program_discovery] Firecrawl returned insufficient content: {url} ({word_count} words)")
+            return html, 200
+            
+    except Exception as e:
+        logger.error(f"[program_discovery] Firecrawl exception for {url}: {type(e).__name__}: {e}")
         return "", 0
 
 
@@ -500,6 +549,16 @@ _OBVIOUS_JUNK = [
     "/financial-aid", "/tuition", "/fees",
     "/scholarships", "/housing", "/campus-map",
     "/registrar", "/graduation",
+    # Additional noise patterns for student/cohort/profile pages
+    "/graduates/", "/graduate/",  # Graduate profiles/stories (not program pages)
+    "/students/", "/student/",    # Student profiles/stories
+    "/cohort/", "/cohorts/",      # Cohort/class pages  
+    "/people/", "/person/",       # People directory
+    "/profiles/", "/profile/",    # Profile pages
+    "/testimonials/",             # Student testimonials
+    "/stories/", "/story/",       # Student stories
+    "/directory/",                # Directory pages
+    "/apply/", "/application/",   # Application process pages (not program pages)
 ]
 
 # Subdomains that are never program pages
@@ -531,10 +590,22 @@ def cheap_prefilter(url: str) -> bool:
 
 # Known degree prefixes that indicate a program page without needing verification
 _DEGREE_PREFIXES = [
-    "msc-", "ma-", "mba-", "llm-", "mphil-", "phd-",
-    "pgce-", "pgdip-", "mres-", "med-", "mph-", "meng-", 
-    "mfin-", "mpharm-", "mphys-", "msci-", "mla-", "mpa-",
-    "engd-", "edd-", "dba-", "md-", "jd-"
+    # Master's degrees
+    "msc-", "ma-", "mba-", "ms-", "mres-", "med-", "mph-", "meng-", 
+    "mfin-", "mpharm-", "mphys-", "msci-", "mla-", "mpa-", "msc.", "ma.", "ms.",
+    "mfa-", "march-", "msw-", "mlis-", "mps-", "mim-", "mem-",
+    # PhD/Doctoral
+    "phd-", "mphil-", "engd-", "edd-", "dba-", "dphil-", "scd-", "dsc-",
+    "dnp-", "dpt-", "pharmd-", "dma-", "ded-",
+    # Professional/Graduate certificates
+    "pgce-", "pgdip-", "grad-cert-", "graduate-certificate-", "post-masters-",
+    "post-baccalaureate-",
+    # Law
+    "llm-", "jd-", "sjd-", "jsd-",
+    # Business (additional)
+    "emba-", "imba-", "pmba-",
+    # Medical
+    "md-", "mbbs-", "mbbch-",
 ]
 
 # Known high-confidence URL patterns (university-specific)
@@ -547,13 +618,29 @@ _HIGH_CONFIDENCE_PATTERNS = [
     r"/study/postgraduate-research/programme",
     r"/study/online-blended-learning/courses/[a-z-]+",
     
+    # Strong auto-confirm patterns (high confidence without fetch)
+    r"/graduate/mba/?$",
+    r"/graduate/masters/?$",
+    r"/graduate/phd/?$",
+    r"/graduate/doctoral/?$",
+    r"/graduate-programs/?$",
+    r"/graduate/programs/[a-z-]+-m[as]",
+    r"/master[s]?/[a-z-]+-m[as]c?",
+    r"/phd/[a-z-]+",
+    r"/doctoral/[a-z-]+",
+    
     # Generic patterns (common across universities)
     r"/programs?/[a-z-]+-(master|msc|ma|mba|phd|doctorate|mphil)",
+    r"/programs?/m[as]-",
+    r"/programs?/.+mba",
+    r"/programs?/.+master",
     r"/graduate/programs?/[a-z-]+-m[as]",
     r"/academics/programs?/graduate/[a-z-]+-(ms|ma|phd)",
-    r"/(msc|ma|mba|phd|mphil|llm|mres|med|mph|meng|mla)-[a-z-]+",
+    r"/(msc|ma|mba|phd|mphil|llm|mres|med|mph|meng|mla|ms)-[a-z-]+",
     r"/postgraduate/[a-z-]+(msc|ma|phd|mba|mphil)",
     r"/(doctoral|doctorate|phd)-program",
+    r"/graduate/masters/[a-z-]",
+    r"/catalog/.+/(mba|master|phd|doctoral)",
 ]
 
 
@@ -728,7 +815,8 @@ _CLASSIFICATION_PROMPT = """\
 You are validating university academic program pages.
 
 For EACH page below, determine:
-1. is_program: true ONLY if this page is specifically about ONE degree/academic program
+1. index: MUST include the exact index number from the input (CRITICAL for matching)
+2. is_program: true ONLY if this page is specifically about ONE degree/academic program
    Examples of TRUE: "MSc Data Science", "BA English Literature", "PhD Chemistry"
    Examples of FALSE:
    - General admissions pages ("Applying to Graduate School")
@@ -738,19 +826,22 @@ For EACH page below, determine:
    - Listing pages showing multiple programs
    - Financial aid, tuition, or fees pages
    - "Why study at Manchester?", "Campus tours", "Widening participation"
-2. program_name: the specific program name if is_program=true, otherwise null
-3. degree_level: one of "Bachelor's", "Master's", "PhD", "Doctoral", "Certificate",
+3. program_name: the specific program name if is_program=true, otherwise null
+4. degree_level: one of "Bachelor's", "Master's", "PhD", "Doctoral", "Certificate",
    "Associate's", "Diploma", "MBA", "Unspecified" — based ONLY on what's stated
-4. confidence: 0.0 to 1.0 — how confident you are this is an individual program page
+5. confidence: 0.0 to 1.0 — how confident you are this is an individual program page
 
 RULES:
+- ALWAYS include the "index" field matching the input index
 - A blog post about studying a degree is NOT a program page
 - A page titled "Clearing" or "How to Apply" is NOT a program page  
 - A page about ONE specific course/program with its own requirements IS a program page
 - Do NOT invent program names
 - Use "Unspecified" rather than guessing degree level
 
-Return ONLY a JSON array, one object per page, same order as input. No markdown, no explanation.
+Return ONLY a JSON array, one object per page, same order as input. 
+Each object MUST include: index, is_program, program_name, degree_level, confidence
+No markdown, no explanation.
 
 Pages:
 {pages_json}
@@ -1360,13 +1451,28 @@ async def gemini_classify_candidates(
                     logger.info(f"[program_discovery] Groq fallback succeeded for batch {gemini_calls}")
                     gemini_available = False  # switch remaining batches to Groq
                 else:
-                    logger.error(
+                    logger.warning(
                         f"[program_discovery] Both Gemini and Groq failed on batch {gemini_calls}. "
-                        f"Stopping classification."
+                        f"Using heuristic classification fallback."
                     )
                     gemini_available = False
-                    status = "partial"
-                    break
+                    # Use heuristic classification instead of stopping
+                    results = []
+                    for j, candidate in enumerate(batch):
+                        degree_level = _fallback_degree_level(candidate["url"], candidate["title"])
+                        # Only accept recognized graduate degree patterns
+                        if degree_level in ["Master's", "PhD", "Certificate"]:
+                            results.append({
+                                "index": j,
+                                "is_program": True,
+                                "program_name": _clean_program_name(candidate["title"], university_name),
+                                "degree_level": degree_level,
+                                "confidence": 0.70,  # Lower confidence for heuristic results
+                            })
+                    logger.info(
+                        f"[program_discovery] Heuristic fallback classified {len(results)}/{len(batch)} "
+                        f"as programs (confidence=0.70)"
+                    )
 
             timings["gemini_api_time"] += gemini_api_duration
 
@@ -1375,32 +1481,74 @@ async def gemini_classify_candidates(
                 f"{len(batch)} candidates classified in {batch_duration:.1f}s "
                 f"(API call: {gemini_api_duration:.1f}s, wall-clock: {batch_wall_end - batch_wall_start:.1f}s)"
             )
+        
+        # Debug: Log raw results
+        logger.info(f"[program_discovery] Raw Gemini results: {results}")
+        logger.info(f"[program_discovery] Batch length: {len(batch)}, Results count: {len(results) if results else 0}")
 
         for result in results:
             if not isinstance(result, dict):
+                logger.warning(f"[program_discovery] Non-dict result: {type(result)} = {result}")
                 continue
-            if not result.get("is_program"):
+            
+            # Debug: Log processing details
+            raw_idx = result.get("index")
+            logger.info(
+                f"[program_discovery] Processing result: "
+                f"idx={raw_idx} | type={type(raw_idx)} | "
+                f"keys={list(result.keys())}"
+            )
+            
+            # Robust index parsing
+            try:
+                idx = int(raw_idx) if raw_idx is not None else None
+            except (TypeError, ValueError) as e:
+                logger.warning(f"[program_discovery] Invalid index from LLM: {raw_idx} ({type(raw_idx)})")
+                idx = None
+            
+            if idx is None or not (0 <= idx < len(batch)):
+                logger.warning(
+                    f"[program_discovery] Index out of bounds or missing: "
+                    f"idx={idx}, batch_len={len(batch)}, raw_idx={raw_idx}"
+                )
                 continue
+            
+            # Get candidate from batch
+            candidate = batch[idx]
+            url = candidate["url"]
+            is_program = result.get("is_program", False)
             confidence = float(result.get("confidence", 0))
-            if confidence < 0.75:
+            degree_level = result.get("degree_level") or "Unknown"
+            program_name = result.get("program_name") or "N/A"
+            
+            logger.info(
+                f"[program_discovery] LLM result: {url[:80]} | "
+                f"is_program={is_program} | confidence={confidence:.2f} | "
+                f"degree={degree_level} | name={program_name[:40] if program_name else 'N/A'}"
+            )
+            
+            if not is_program:
+                logger.debug(f"[program_discovery] Rejected (not a program): {url[:80]}")
                 continue
-
-            # Find matching candidate URL by index
-            idx = result.get("index", -1)
-            if 0 <= idx < len(batch):
-                url = batch[idx]["url"]
-                program_name = result.get("program_name") or _clean_program_name(
-                    batch[idx]["title"], university_name
-                )
-                degree_level = result.get("degree_level") or _fallback_degree_level(
-                    url, batch[idx]["title"]
-                )
-                confirmed_programs.append({
-                    "program_name": program_name,
-                    "degree_level": degree_level,
-                    "url": url,
-                    "confidence": confidence,
-                })
+                
+            if confidence < 0.55:  # Lowered from 0.70 to 0.55
+                logger.debug(f"[program_discovery] Rejected (low confidence {confidence:.2f}): {url[:80]}")
+                continue
+            
+            # Add to confirmed programs
+            program_name = result.get("program_name") or _clean_program_name(
+                candidate["title"], university_name
+            )
+            degree_level = result.get("degree_level") or _fallback_degree_level(
+                url, candidate["title"]
+            )
+            confirmed_programs.append({
+                "program_name": program_name,
+                "degree_level": degree_level,
+                "url": url,
+                "confidence": confidence,
+            })
+            logger.info(f"[program_discovery] ✅ Added program: {program_name} ({degree_level})")
         
         candidates_processed = i + len(batch)
 
@@ -1466,6 +1614,51 @@ async def gemini_classify_candidates(
     
     # Step 4: Combine auto-confirmed + Gemini-confirmed
     all_programs = auto_confirmed + confirmed_programs
+    
+    # Step 5: Deduplicate by (program_name, degree_level)
+    def normalize(s: str) -> str:
+        """Normalize string for deduplication."""
+        if not s:
+            return ""
+        # Remove common prefixes/suffixes, lowercase, strip whitespace
+        s = s.lower().strip()
+        s = re.sub(r'\s+', ' ', s)  # Normalize whitespace
+        # Remove degree abbreviations from names for better matching
+        s = re.sub(r'\(m\.?s\.?c?\.?\)|master of science|m\.?s\.?c?\.?$', '', s, flags=re.I)
+        s = re.sub(r'\(m\.?a\.?\)|master of arts|m\.?a\.?$', '', s, flags=re.I)
+        s = re.sub(r'\(ph\.?d\.?\)|doctor of philosophy|ph\.?d\.?$', '', s, flags=re.I)
+        s = re.sub(r'\(m\.?b\.?a\.?\)|master of business|m\.?b\.?a\.?$', '', s, flags=re.I)
+        return s.strip()
+    
+    seen = set()
+    deduped_programs = []
+    duplicates_removed = 0
+    
+    for prog in all_programs:
+        # Create deduplication key
+        name_norm = normalize(prog.get("program_name", ""))
+        degree_norm = normalize(prog.get("degree_level", ""))
+        key = (name_norm, degree_norm)
+        
+        if key in seen:
+            duplicates_removed += 1
+            logger.debug(
+                f"[program_discovery] Duplicate removed: {prog.get('program_name')} "
+                f"({prog.get('degree_level')}) - {prog.get('url', '')[:60]}"
+            )
+            continue
+        
+        seen.add(key)
+        deduped_programs.append(prog)
+    
+    if duplicates_removed > 0:
+        logger.info(
+            f"[program_discovery] Deduplication: {len(all_programs)} → {len(deduped_programs)} "
+            f"({duplicates_removed} duplicates removed)"
+        )
+    
+    all_programs = deduped_programs
+    
     logger.info(
         f"[program_discovery] Stage 3 total: {len(all_programs)} programs "
         f"({len(auto_confirmed)} auto-confirmed + {len(confirmed_programs)} Gemini-confirmed)"
@@ -1674,7 +1867,6 @@ async def discover_programs(
     university_name: str = "",
     max_pages: int = 30,
     max_programs: int = 500,  # Increased default from 200 to 500
-    skip_gemini_threshold: int = 0,  # If >0, skip Gemini when candidates < threshold
 ) -> list[dict]:
     """
     Discover university program pages using Gemini-based classification.
@@ -1840,25 +2032,29 @@ async def discover_programs(
         filtered = filtered[:candidate_cap]
 
     # ── Stage 3: Gemini classification ───────────────────────────────────────
-    # Optional: Skip Gemini if remaining candidates are below threshold
-    # Useful when Gemini finds very few programs relative to time cost
-    if skip_gemini_threshold > 0 and len(filtered) < skip_gemini_threshold:
-        logger.info(
-            f"[program_discovery] Skipping Gemini: {len(filtered)} candidates < threshold {skip_gemini_threshold}. "
-            f"Using heuristics only."
-        )
-        confirmed = []
-        classification_status = "skipped"
+    # Smart classification: adjust batch size based on candidate count
+    # Small batches (< 50): classify all
+    # Medium batches (50-200): classify top 50
+    # Large batches (> 200): classify top 100
+    if len(filtered) <= 50:
+        candidates_to_classify = filtered
+        logger.info(f"[program_discovery] Classifying all {len(filtered)} candidates (small batch)")
+    elif len(filtered) <= 200:
+        candidates_to_classify = filtered[:50]
+        logger.info(f"[program_discovery] Classifying top 50 of {len(filtered)} candidates (medium batch)")
     else:
-        confirmed, classification_status = await gemini_classify_candidates(
-            filtered, university_name, batch_size=15,
-            hard_cap=settings.max_programs_per_university,
-        )
+        candidates_to_classify = filtered[:100]
+        logger.info(f"[program_discovery] Classifying top 100 of {len(filtered)} candidates (large batch)")
+    
+    confirmed, classification_status = await gemini_classify_candidates(
+        candidates_to_classify, university_name, batch_size=15,
+        hard_cap=settings.max_programs_per_university,
+    )
 
     if not confirmed:
         logger.warning(
             f"[program_discovery] Gemini found 0 programs for {domain} "
-            f"(no API key, skipped, or all filtered out)"
+            f"(no API key, or all filtered out)"
         )
         return []
 
