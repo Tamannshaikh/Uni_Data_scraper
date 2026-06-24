@@ -828,11 +828,26 @@ async def _expand_landing_pages_by_anchor_text(
     ]
     
     # Department/field names (positive signal)
+    # Organized by broad category for better matching
     DEPARTMENT_PATTERNS = [
-        r'\bComputer Science\b', r'\bEngineering\b', r'\bBusiness\b',
-        r'\bEconomics\b', r'\bPhysics\b', r'\bChemistry\b', r'\bBiology\b',
-        r'\bMathematics\b', r'\bEducation\b', r'\bPsychology\b',
-        r'\bSociology\b', r'\bHistory\b', r'\bEnglish\b', r'\bPhilosophy\b',
+        # STEM
+        r'\bComputer Science\b', r'\bComputing\b', r'\bData Science\b',
+        r'\bEngineering\b', r'\bMechanical Engineering\b', r'\bElectrical Engineering\b',
+        r'\bCivil Engineering\b', r'\bChemical Engineering\b',
+        r'\bPhysics\b', r'\bChemistry\b', r'\bBiology\b', r'\bBiochemistry\b',
+        r'\bMathematics\b', r'\bStatistics\b',
+        # Business & Economics
+        r'\bBusiness\b', r'\bManagement\b', r'\bFinance\b', r'\bAccounting\b',
+        r'\bEconomics\b', r'\bMarketing\b', r'\bEntrepreneurship\b',
+        # Social Sciences & Humanities
+        r'\bEducation\b', r'\bPsychology\b', r'\bSociology\b', r'\bAnthropology\b',
+        r'\bHistory\b', r'\bEnglish\b', r'\bPhilosophy\b', r'\bPolitical Science\b',
+        # Health & Medicine
+        r'\bMedicine\b', r'\bNursing\b', r'\bPublic Health\b', r'\bPharmacy\b',
+        # Arts & Design
+        r'\bArt\b', r'\bDesign\b', r'\bArchitecture\b', r'\bMusic\b',
+        # Law & Policy
+        r'\bLaw\b', r'\bPolicy\b', r'\bPublic Policy\b', r'\bInternational Relations\b',
     ]
     
     # Generic navigation text (hard reject)
@@ -2128,6 +2143,8 @@ async def gemini_classify_candidates(
             # Handle based on PageType taxonomy
             if PageType.should_expand(page_type):
                 logger.info(f"[program_discovery] ** {page_type} page detected, will expand: {url[:80]}")
+                # Store page_type in candidate for different expansion strategies
+                candidate["page_type"] = page_type
                 landing_pages_to_expand.append(candidate)
                 continue
             
@@ -2220,22 +2237,37 @@ async def gemini_classify_candidates(
             f"Check for sequential operations or hidden waits."
         )
     
-    # Step 3.5: Expand LANDING pages (pages that list multiple programs)
+    # Step 3.5: Expand LANDING/DIRECTORY pages (pages that list multiple programs)
     if landing_pages_to_expand:
         logger.info(
-            f"[program_discovery] ** Expanding {len(landing_pages_to_expand)} LANDING pages "
+            f"[program_discovery] ** Expanding {len(landing_pages_to_expand)} LANDING/DIRECTORY pages "
             f"(pages that list multiple programs)"
         )
-        landing_expanded_urls = await _expand_landing_pages_by_anchor_text(
-            landing_pages_to_expand, university_name
-        )
         
-        if landing_expanded_urls:
+        # Separate by page type for different expansion strategies
+        landing_pages = [p for p in landing_pages_to_expand if p.get("page_type") == "LANDING"]
+        directory_pages = [p for p in landing_pages_to_expand if p.get("page_type") == "DIRECTORY"]
+        
+        all_expanded_urls = []
+        
+        # Expand LANDING pages (anchor-text based)
+        if landing_pages:
+            logger.info(f"[program_discovery]   Expanding {len(landing_pages)} LANDING pages via anchor text")
+            landing_urls = await _expand_landing_pages_by_anchor_text(landing_pages, university_name)
+            all_expanded_urls.extend(landing_urls)
+        
+        # Expand DIRECTORY pages (search/browse pages - similar strategy)
+        if directory_pages:
+            logger.info(f"[program_discovery]   Expanding {len(directory_pages)} DIRECTORY pages via anchor text")
+            directory_urls = await _expand_landing_pages_by_anchor_text(directory_pages, university_name)
+            all_expanded_urls.extend(directory_urls)
+        
+        if all_expanded_urls:
             logger.info(
-                f"[program_discovery] Landing page expansion extracted {len(landing_expanded_urls)} program URLs"
+                f"[program_discovery] Combined expansion extracted {len(all_expanded_urls)} program URLs"
             )
-            # Add to confirmed programs (these are high-confidence since they came from landing pages)
-            for url in landing_expanded_urls[:20]:  # Cap at 20 to avoid runaway growth
+            # Add to confirmed programs (these are high-confidence since they came from landing/directory pages)
+            for url in all_expanded_urls[:20]:  # Cap at 20 to avoid runaway growth
                 # Try auto-confirm pattern matching first
                 title = ""  # Will be fetched if needed
                 program_name = _clean_program_name(title or url.split("/")[-1], university_name)
@@ -2245,10 +2277,10 @@ async def gemini_classify_candidates(
                     "program_name": program_name,
                     "degree_level": degree_level,
                     "url": url,
-                    "confidence": 0.85,  # High confidence from landing page
+                    "confidence": 0.85,  # High confidence from landing/directory page
                 })
                 logger.info(
-                    f"[program_discovery] + Added from landing page: {program_name} ({degree_level})"
+                    f"[program_discovery] + Added from expansion: {program_name} ({degree_level})"
                 )
     
     # Step 4: Combine auto-confirmed + Gemini-confirmed
