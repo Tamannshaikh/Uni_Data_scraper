@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import time
+from enum import Enum
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
@@ -32,6 +33,55 @@ _HEADERS = {
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
+
+
+# ── Page Type Taxonomy ────────────────────────────────────────────────────────
+
+class PageType(Enum):
+    """
+    Explicit page type classification for systematic handling.
+    
+    Each page type has specific behavior:
+    - PROGRAM: Return as result (individual degree page)
+    - LANDING: Expand to extract program links (lists multiple programs)
+    - DIRECTORY: Expand to extract program links (search/browse pages)
+    - DEPARTMENT: Expand lightly (department homepages may link to programs)
+    - POLICY: Discard (admissions policies, requirements docs)
+    - NEWS: Discard (blog posts, student stories, events)
+    - PROFILE: Discard (student/faculty profiles)
+    - EVENT: Discard (seminars, workshops, conferences)
+    - ADMIN: Discard (administrative pages, forms, calendars)
+    - OTHER: Discard (unknown/miscellaneous)
+    """
+    PROGRAM = "PROGRAM"
+    LANDING = "LANDING"
+    DIRECTORY = "DIRECTORY"
+    DEPARTMENT = "DEPARTMENT"
+    POLICY = "POLICY"
+    NEWS = "NEWS"
+    PROFILE = "PROFILE"
+    EVENT = "EVENT"
+    ADMIN = "ADMIN"
+    OTHER = "OTHER"
+    
+    @classmethod
+    def should_expand(cls, page_type: str) -> bool:
+        """Return True if this page type should be expanded to extract links."""
+        return page_type in [cls.LANDING.value, cls.DIRECTORY.value]
+    
+    @classmethod
+    def should_discard(cls, page_type: str) -> bool:
+        """Return True if this page type should be discarded."""
+        return page_type in [
+            cls.POLICY.value, cls.NEWS.value, cls.PROFILE.value,
+            cls.EVENT.value, cls.ADMIN.value, cls.OTHER.value
+        ]
+    
+    @classmethod
+    def is_program(cls, page_type: str) -> bool:
+        """Return True if this is an individual program page."""
+        return page_type == cls.PROGRAM.value
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -746,15 +796,16 @@ async def _expand_landing_pages_by_anchor_text(
     landing_pages: list[dict], university_name: str = ""
 ) -> list[str]:
     """
-    Extract program URLs from LANDING pages using ANCHOR TEXT matching.
+    Extract program URLs from LANDING pages using ANCHOR TEXT matching with quality scoring.
     
     Landing pages (e.g., "Our PhD Programs", "Master's Degrees") list multiple programs.
-    We extract links whose anchor text looks like a degree name.
+    We extract links whose anchor text looks like a degree name using a scoring system.
     
     Strategy (per user feedback):
     - Focus on ANCHOR TEXT, not URL keywords
-    - Look for patterns like "Computer Science, MS" or "Mechanical Engineering, PhD"
-    - Anchor text is far more reliable than URLs on university sites
+    - Score each anchor based on multiple signals
+    - Reject generic navigation links (Learn More, Apply, etc.)
+    - Require minimum quality score to accept
     
     Args:
         landing_pages: List of landing page candidates with url/html
@@ -776,6 +827,94 @@ async def _expand_landing_pages_by_anchor_text(
         r'\bM\.?P\.?H\.?\b', r'\bM\.?P\.?A\.?\b',
     ]
     
+    # Department/field names (positive signal)
+    DEPARTMENT_PATTERNS = [
+        r'\bComputer Science\b', r'\bEngineering\b', r'\bBusiness\b',
+        r'\bEconomics\b', r'\bPhysics\b', r'\bChemistry\b', r'\bBiology\b',
+        r'\bMathematics\b', r'\bEducation\b', r'\bPsychology\b',
+        r'\bSociology\b', r'\bHistory\b', r'\bEnglish\b', r'\bPhilosophy\b',
+    ]
+    
+    # Generic navigation text (hard reject)
+    NAVIGATION_REJECTS = {
+        'home', 'learn more', 'apply', 'overview', 'contact', 'admissions',
+        'visit', 'back', 'next', 'previous', 'more info', 'read more',
+        'details', 'explore', 'discover', 'find out', 'click here',
+        'view all', 'see all', 'about', 'about us', 'why choose',
+    }
+    
+    # Generic URL basenames (reject)
+    URL_BASENAME_REJECTS = {
+        'home.php', 'index.php', 'overview.php', 'apply.php',
+        'home.html', 'index.html', 'overview.html', 'apply.html',
+        'default.php', 'default.html', 'main.php', 'main.html',
+    }
+    
+    def score_anchor(anchor_text: str, href: str) -> tuple[int, str]:
+        """
+        Score an anchor link based on multiple signals.
+        Returns (score, reason) where score >= 5 is accepted.
+        """
+        score = 0
+        reasons = []
+        
+        anchor_lower = anchor_text.lower().strip()
+        word_count = len(anchor_text.split())
+        
+        # Hard rejects first
+        if anchor_lower in NAVIGATION_REJECTS:
+            return (-100, "navigation_text")
+        
+        # Check URL basename
+        from urllib.parse import urlparse
+        try:
+            basename = urlparse(href).path.split('/')[-1].lower()
+            if basename in URL_BASENAME_REJECTS:
+                return (-100, "generic_url")
+        except Exception:
+            pass
+        
+        # Too short (unless it's an abbreviation like MBA)
+        if len(anchor_text) < 10:
+            if anchor_lower not in ['mba', 'ms', 'ma', 'phd', 'meng', 'llm']:
+                return (-100, "too_short")
+        
+        # Contains degree pattern? +5
+        has_degree = any(
+            re.search(pattern, anchor_text, re.IGNORECASE)
+            for pattern in DEGREE_PATTERNS
+        )
+        if has_degree:
+            score += 5
+            reasons.append("degree_pattern")
+        
+        # Word count in sweet spot (2-12 words)? +3
+        if 2 <= word_count <= 12:
+            score += 3
+            reasons.append("good_length")
+        
+        # Contains department/field name? +2
+        has_department = any(
+            re.search(pattern, anchor_text, re.IGNORECASE)
+            for pattern in DEPARTMENT_PATTERNS
+        )
+        if has_department:
+            score += 2
+            reasons.append("department_name")
+        
+        # All caps (likely navigation)? -5
+        if anchor_text.isupper() and word_count > 1:
+            score -= 5
+            reasons.append("all_caps")
+        
+        # Contains question mark (likely FAQ)? -3
+        if '?' in anchor_text:
+            score -= 3
+            reasons.append("question")
+        
+        reason_str = ",".join(reasons) if reasons else "no_signals"
+        return (score, reason_str)
+    
     extracted_urls = []
     
     for landing_page in landing_pages:
@@ -795,6 +934,10 @@ async def _expand_landing_pages_by_anchor_text(
             links = soup.find_all('a', href=True)
             
             page_extracted = 0
+            page_rejected = 0
+            
+            logger.info(f"[program_discovery]   Landing extraction from {len(links)} links:")
+            
             for link in links:
                 href = link.get('href', '').strip()
                 if not href or href.startswith('#') or href.startswith('javascript:'):
@@ -802,30 +945,39 @@ async def _expand_landing_pages_by_anchor_text(
                 
                 # Get anchor text
                 anchor_text = link.get_text(' ', strip=True)
-                if not anchor_text or len(anchor_text) < 5:
+                if not anchor_text:
                     continue
                 
-                # Check if anchor text looks like a degree name
-                # Examples: "Computer Science, MS", "PhD in Chemistry", "Master of Business"
-                matches_degree_pattern = any(
-                    re.search(pattern, anchor_text, re.IGNORECASE)
-                    for pattern in DEGREE_PATTERNS
-                )
+                # Score the anchor
+                score, reason = score_anchor(anchor_text, href)
                 
-                if matches_degree_pattern:
+                # Accept if score >= 5
+                if score >= 5:
                     abs_url = urljoin(url, href)
                     extracted_urls.append(abs_url)
                     page_extracted += 1
-                    logger.debug(
-                        f"[program_discovery]   → Found: '{anchor_text[:60]}' → {abs_url[:60]}"
-                    )
+                    
+                    # Log first 10 for inspection
+                    if page_extracted <= 10:
+                        logger.info(
+                            f"[program_discovery]     {page_extracted}. "
+                            f"[score={score:+d}] '{anchor_text[:60]}' → {abs_url[:60]}"
+                        )
                     
                     # Cap per page
                     if page_extracted >= 30:
                         break
+                else:
+                    page_rejected += 1
+                    # Log first few rejections for debugging
+                    if page_rejected <= 3:
+                        logger.debug(
+                            f"[program_discovery]     REJECT [score={score:+d}, {reason}] "
+                            f"'{anchor_text[:40]}'"
+                        )
             
             logger.info(
-                f"[program_discovery]   Extracted {page_extracted} programs from landing page"
+                f"[program_discovery]   Result: {page_extracted} extracted, {page_rejected} rejected"
             )
         
         except Exception as e:
@@ -1124,10 +1276,14 @@ For EACH page below, determine:
 2. page_type: one of:
    - "PROGRAM" = page describes ONE specific degree/program (e.g., "MSc Data Science", "PhD Chemistry")
    - "LANDING" = page lists/introduces MULTIPLE programs (e.g., "Our PhD Programs", "Master's Degrees")
-   - "ADMIN" = admissions, tuition, fees, how to apply, financial aid, policies
-   - "DEPARTMENT" = department homepage, faculty list, research areas
+   - "DIRECTORY" = search/browse page for programs (e.g., "Program Search", "Find a Degree")
+   - "DEPARTMENT" = department homepage with faculty/research (e.g., "School of Engineering")
+   - "POLICY" = admissions policies, requirements, procedures
    - "NEWS" = blog posts, student stories, events, news articles
-   - "OTHER" = anything else
+   - "PROFILE" = student or faculty profile page
+   - "EVENT" = seminar, workshop, conference, lecture
+   - "ADMIN" = administrative pages (forms, calendars, registrar)
+   - "OTHER" = anything else that doesn't fit above
 3. is_program: true if page_type is "PROGRAM", false otherwise
 4. program_name: the specific program name if page_type="PROGRAM", otherwise null
 5. degree_level: one of "Bachelor's", "Master's", "PhD", "Doctoral", "Certificate",
@@ -1138,8 +1294,12 @@ Examples:
 - Title "A Purdue PhD" with text "Our PhD programs... Economics... Management..." → page_type="LANDING"
 - Title "Specialized Master's Programs" listing 6 programs → page_type="LANDING"
 - Title "MSc Computer Science" with admission requirements → page_type="PROGRAM"
-- Title "How to Apply" with application deadlines → page_type="ADMIN"
+- Title "Program Search" with search form → page_type="DIRECTORY"
 - Title "School of Engineering" with faculty directory → page_type="DEPARTMENT"
+- Title "How to Apply" with application deadlines → page_type="POLICY"
+- Title "Why I Chose This University" personal story → page_type="NEWS"
+- Title "Dr. John Smith, Professor" → page_type="PROFILE"
+- Title "Fall Research Seminar Series" → page_type="EVENT"
 
 CRITICAL RULES:
 - ALWAYS include the "index" field matching the input index
@@ -1147,6 +1307,7 @@ CRITICAL RULES:
 - Landing pages are VALUABLE - they lead to individual programs
 - Only mark as "PROGRAM" if page is about ONE specific degree
 - Use "Unspecified" rather than guessing degree level
+- Be specific with page types - don't default to OTHER
 
 Return ONLY a JSON array, one object per page, same order as input. 
 Each object MUST include: index, page_type, is_program, program_name, degree_level, confidence
@@ -1964,14 +2125,18 @@ async def gemini_classify_candidates(
                 f"degree={degree_level} | name={program_name[:40] if program_name else 'N/A'}"
             )
             
-            # Handle LANDING pages - expand them to find individual programs
-            if page_type == "LANDING":
-                logger.info(f"[program_discovery] ** LANDING page detected, will expand: {url[:80]}")
+            # Handle based on PageType taxonomy
+            if PageType.should_expand(page_type):
+                logger.info(f"[program_discovery] ** {page_type} page detected, will expand: {url[:80]}")
                 landing_pages_to_expand.append(candidate)
                 continue
             
-            if not is_program:
-                logger.debug(f"[program_discovery] Rejected (not a program): {url[:80]}")
+            if PageType.should_discard(page_type):
+                logger.debug(f"[program_discovery] Discarded ({page_type}): {url[:80]}")
+                continue
+            
+            if not PageType.is_program(page_type):
+                logger.debug(f"[program_discovery] Not a program ({page_type}): {url[:80]}")
                 continue
                 
             if confidence < 0.55:  # Lowered from 0.70 to 0.55
