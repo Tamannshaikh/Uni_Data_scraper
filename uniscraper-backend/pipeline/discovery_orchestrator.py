@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import database
 from pipeline.domain_resolver import resolve_university_domain
-from pipeline.program_discovery import discover_programs
+from pipeline.simple_discovery import discover_programs_simple
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +79,10 @@ async def run_discovery(discovery_id: str, university_name: str) -> None:
         logger.info(
             f"[discovery_orchestrator] {discovery_id} — discovering programs on {domain}"
         )
-        programs = await discover_programs(
+        programs = await discover_programs_simple(
             domain=domain,
             university_name=university_name,
-            max_pages=80,
+            max_catalog_pages=12,
         )
 
         elapsed = round(time.monotonic() - start_time, 2)
