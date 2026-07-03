@@ -2,11 +2,16 @@
 # Discovers program pages on a university website.
 #
 # ARCHITECTURE — 5 stages:
-#   Stage 1: Candidate Collection  (sitemap + SerpAPI + legacy BFS)
+#   Stage 1: Candidate Collection  (sitemap + Jina AI Search + SerpAPI fallback + legacy BFS)
 #   Stage 2: Cheap Pre-Filter      (string checks, no API calls)
 #   Stage 3: Gemini Batch Classification  (title + ~200 words, 12-15 per call)
 #   Stage 4: Sibling Expansion     (sitemap around confirmed pages, one pass)
 #   Stage 5: Full extraction       (handled by orchestrator, not this file)
+#
+# Stage 1 Discovery Priority:
+#   1. Jina AI Search (primary) - searches domain + Gemini picks best catalog
+#   2. SerpAPI (fallback) - only if Jina fails
+#   3. Legacy BFS - last resort
 #
 # Stage 3 output is for the DISCOVERY LIST UI ONLY (clickable cards).
 # Stage 3 never substitutes for full Phase 1 extraction — that runs independently.
@@ -535,7 +540,33 @@ async def collect_candidates(
                 f"[program_discovery] Sitemap: {len(matching)} URLs under {ppath}"
             )
 
-    # ── 1b: SerpAPI ───────────────────────────────────────────────────────────
+    # ── 1b: Jina AI Search (primary) ─────────────────────────────────────────
+    if settings.jina_api_key:
+        try:
+            from services.jina_search import search_and_extract_catalog_urls
+            
+            logger.info(f"[program_discovery] Trying Jina AI Search for {domain}")
+            
+            # Get candidate URLs from Jina (programmatic filtering, no AI)
+            jina_urls = await search_and_extract_catalog_urls(
+                domain, 
+                university_name,
+                api_key=settings.jina_api_key
+            )
+            
+            if jina_urls:
+                logger.info(
+                    f"[program_discovery] Jina returned {len(jina_urls)} candidate URLs"
+                )
+                for url in jina_urls:
+                    all_candidates.add(url)
+            else:
+                logger.info(f"[program_discovery] Jina found no candidates for {domain}")
+                
+        except Exception as e:
+            logger.debug(f"[program_discovery] Jina Search failed: {e}")
+
+    # ── 1c: SerpAPI (fallback) ───────────────────────────────────────────────
     if settings.serpapi_key and settings.serpapi_enabled:
         try:
             from pipeline.serpapi_client import search_program_pages
@@ -1333,13 +1364,70 @@ Pages:
 """
 
 
+async def _call_openrouter_classify(candidates: list[dict]) -> list[dict]:
+    """
+    Call OpenRouter (google/gemini-2.5-flash) to classify a batch of candidates.
+    PRIMARY classifier — paid tier, no RPM throttling needed.
+    """
+    if not settings.openrouter_api_key:
+        return []
+
+    pages_json = json.dumps(candidates, indent=2)
+    prompt = _CLASSIFICATION_PROMPT.format(pages_json=pages_json)
+    or_model = getattr(settings, "openrouter_model", "google/gemini-2.5-flash")
+
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {settings.openrouter_api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://uniscraper.app",
+                        "X-Title": "UniScraper",
+                    },
+                    json={
+                        "model": or_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0,
+                        "max_tokens": 2000,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+                if resp.status_code == 429:
+                    logger.warning(f"[program_discovery] OpenRouter 429 (attempt {attempt+1}/3)")
+                    await asyncio.sleep(5)
+                    continue
+                resp.raise_for_status()
+                text = resp.json()["choices"][0]["message"]["content"]
+                text = re.sub(r"```(?:json)?\s*", "", text).strip().rstrip("```").strip()
+                # OpenRouter/json_object sometimes wraps array in object — extract array
+                if text.startswith("{"):
+                    m = re.search(r"\[.*\]", text, re.DOTALL)
+                    text = m.group(0) if m else text
+                results = json.loads(text)
+                if isinstance(results, list):
+                    logger.info(f"[program_discovery] OpenRouter classified {len(candidates)} candidates")
+                    return results
+                return []
+        except json.JSONDecodeError as e:
+            logger.warning(f"[program_discovery] OpenRouter JSON parse error: {e}")
+            return []
+        except Exception as e:
+            logger.warning(f"[program_discovery] OpenRouter classify attempt {attempt+1} failed: {e}")
+            await asyncio.sleep(5)
+
+    return []
+
+
 async def _call_gemini_classify(
     candidates: list[dict],  # [{"index": int, "url": str, "title": str, "snippet": str}]
 ) -> list[dict]:
     """
-    Call Gemini to classify a batch of candidates.
+    Call Gemini direct API to classify a batch of candidates.
+    FALLBACK 1 — used when OpenRouter is unavailable.
     Uses shared rate limiting from ai_extractor to avoid conflicts.
-    Returns list of classification results.
     """
     if not settings.gemini_api_key:
         return []
@@ -1361,89 +1449,54 @@ async def _call_gemini_classify(
 
     # Import shared rate limiter from ai_extractor
     from pipeline.ai_extractor import _GEMINI_SEMAPHORE, _enforce_rpm_limit, _request_timestamps
-    
+
     for attempt in range(3):
         try:
-            # Use shared semaphore + rate limit enforcement
             async with _GEMINI_SEMAPHORE:
                 rate_limit_check_start = time.time()
-                
-                # Enforce RPM limit before making request
                 wait = _enforce_rpm_limit()
-                
-                # Log rate limiter state before every request
                 now = time.monotonic()
                 recent_calls = [t for t in _request_timestamps if now - t < 60.0]
                 logger.info(
                     f"[program_discovery] Rate limiter check: {len(recent_calls)} calls in last 60s, "
                     f"wait={wait:.1f}s"
                 )
-                
                 if wait > 0:
                     logger.info(f"[program_discovery] ⏱️  RATE LIMIT: Sleeping {wait:.1f}s before API call")
                     await asyncio.sleep(wait)
-                    logger.info(f"[program_discovery] ⏱️  RATE LIMIT: Sleep complete, proceeding with API call")
-                
                 rate_limit_overhead = time.time() - rate_limit_check_start
-                
-                # Track this request in the shared rolling window
                 _request_timestamps.append(time.monotonic())
-                
                 api_call_start = time.time()
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     resp = await client.post(url, json=payload)
-                    
-                    # Handle 403 Forbidden immediately - don't retry
                     if resp.status_code == 403:
-                        logger.error(
-                            f"[program_discovery] Gemini 403 Forbidden - Authentication failed. "
-                            f"Check API key, billing, or API enablement. Aborting Gemini classification."
-                        )
+                        logger.error("[program_discovery] Gemini 403 Forbidden — aborting Gemini classification")
                         return []
-                    
-                    # Handle 429 with backoff — but give up fast on quota exhaustion.
-                    # Two consecutive 429s = quota exhausted for the session.
-                    # No point waiting 90s for a third attempt that will also 429.
                     if resp.status_code == 429:
                         if attempt >= 1:
-                            # Already retried once — quota is exhausted, bail out
-                            logger.warning(
-                                f"[program_discovery] Gemini 429 on attempt {attempt + 1} "
-                                f"— quota exhausted, aborting to avoid wasted wait time"
-                            )
+                            logger.warning(f"[program_discovery] Gemini 429 x{attempt+1} — quota exhausted")
                             return []
-                        wait = 30  # single short wait on first 429
-                        logger.warning(f"[program_discovery] Gemini 429, waiting {wait}s (attempt {attempt + 1}/2)")
-                        await asyncio.sleep(wait)
+                        await asyncio.sleep(30)
                         continue
-                    
                     resp.raise_for_status()
                     data = resp.json()
                     text = data["candidates"][0]["content"]["parts"][0]["text"]
-                    # Strip markdown fences if present
                     text = re.sub(r"```(?:json)?\s*", "", text).strip().rstrip("```").strip()
                     results = json.loads(text)
-                    
                     api_call_duration = time.time() - api_call_start
                     total_call_duration = time.time() - rate_limit_check_start
-                    
                     logger.info(
                         f"[program_discovery] Gemini timing: "
                         f"rate_limit_overhead={rate_limit_overhead:.1f}s, "
                         f"api_call={api_call_duration:.1f}s, "
                         f"total={total_call_duration:.1f}s"
                     )
-                    
                     if isinstance(results, list):
                         return results
                     return []
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 403:
-                logger.error(
-                    f"[program_discovery] Gemini 403 Forbidden - Authentication failed. "
-                    f"Check API key: {settings.gemini_api_key[:20]}... "
-                    f"Aborting Gemini classification."
-                )
+                logger.error("[program_discovery] Gemini 403 Forbidden — aborting")
                 return []
             logger.warning(f"[program_discovery] Gemini HTTP error attempt {attempt+1}: {e}")
             await asyncio.sleep(5)
@@ -2018,21 +2071,25 @@ async def gemini_classify_candidates(
             batch_duration = 0.0
         else:
             logger.info(
-                f"[program_discovery] t={batch_wall_start - start_time:.1f}s: Starting Gemini batch {gemini_calls} "
+                f"[program_discovery] t={batch_wall_start - start_time:.1f}s: Starting classification batch {gemini_calls} "
                 f"({len(batch)} candidates)"
             )
 
             batch_start = time.time()
             gemini_api_start = time.time()
-            results = await _call_gemini_classify(batch_input)
+            # PRIMARY: OpenRouter → FALLBACK 1: Gemini direct → FALLBACK 2: Groq
+            results = await _call_openrouter_classify(batch_input)
+            if not results:
+                logger.info(f"[program_discovery] OpenRouter returned nothing — trying Gemini direct")
+                results = await _call_gemini_classify(batch_input)
             gemini_api_duration = time.time() - gemini_api_start
             batch_duration = time.time() - batch_start
             batch_wall_end = time.time()
 
-            # If Gemini returned nothing, try Groq fallback
+            # If both OpenRouter and Gemini returned nothing, try Groq fallback
             if results is None or (isinstance(results, list) and len(results) == 0 and len(batch) > 0):
                 logger.warning(
-                    f"[program_discovery] Gemini returned no results on batch {gemini_calls} — "
+                    f"[program_discovery] OpenRouter+Gemini returned no results on batch {gemini_calls} — "
                     f"trying Groq fallback"
                 )
                 groq_results = await _call_groq_classify(batch_input)
@@ -2042,7 +2099,7 @@ async def gemini_classify_candidates(
                     gemini_available = False  # switch remaining batches to Groq
                 else:
                     logger.warning(
-                        f"[program_discovery] Both Gemini and Groq failed on batch {gemini_calls}. "
+                        f"[program_discovery] All classifiers failed on batch {gemini_calls}. "
                         f"Using heuristic classification fallback."
                     )
                     gemini_available = False

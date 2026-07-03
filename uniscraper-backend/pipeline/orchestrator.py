@@ -210,81 +210,90 @@ async def run_scrape(scrape_id: str, url: str, context_hint: str = "") -> None:
         llm_model_used = extracted.pop("_model_used", method_used)
         
         # ── STEP 6.5: Gap Detection and Targeted Recrawl ──────────────────────
-        from pipeline.gap_analyzer import analyze_missing_fields, CRITICAL_FIELDS
-        from pipeline.targeted_recrawl import targeted_recrawl, check_existing_pages_for_content
+        # Skip recrawl if AI enrichment is enabled — it will fill missing fields
+        skip_recrawl = settings.gemini_api_key  # AI enrichment handles missing fields
         
-        # Check if critical fields are missing
-        gap_analysis = await analyze_missing_fields(extracted, pages_data, final_url)
-        
-        if gap_analysis["needs_recrawl"]:
+        if skip_recrawl:
             logger.info(
-                f"[orchestrator] {scrape_id} — gap detected, missing: "
-                f"{', '.join(gap_analysis['missing_fields'])}"
+                f"[orchestrator] {scrape_id} — skipping gap detection/recrawl "
+                f"(AI enrichment will fill missing fields)"
             )
+        else:
+            from pipeline.gap_analyzer import analyze_missing_fields, CRITICAL_FIELDS
+            from pipeline.targeted_recrawl import targeted_recrawl, check_existing_pages_for_content
             
-            # First, check if missing content is in already-fetched pages
-            found_in_existing = await check_existing_pages_for_content(
-                pages_data, gap_analysis["missing_fields"]
-            )
+            # Check if critical fields are missing
+            gap_analysis = await analyze_missing_fields(extracted, pages_data, final_url)
             
-            if found_in_existing:
+            if gap_analysis["needs_recrawl"]:
                 logger.info(
-                    f"[orchestrator] {scrape_id} — found content in existing pages: "
-                    f"{found_in_existing}"
-                )
-            
-            # Fetch additional pages suggested by gap analysis
-            new_pages = await targeted_recrawl(
-                final_url,
-                gap_analysis["suggested_page_types"],
-                pages_data,
-                max_new_pages=5,
-            )
-            
-            if new_pages:
-                logger.info(
-                    f"[orchestrator] {scrape_id} — fetched {len(new_pages)} additional pages"
+                    f"[orchestrator] {scrape_id} — gap detected, missing: "
+                    f"{', '.join(gap_analysis['missing_fields'])}"
                 )
                 
-                # Add new pages to pages_data
-                pages_data.extend(new_pages)
-                
-                # Add new content to text_parts for re-extraction
-                for page in new_pages:
-                    label = f"{page['url'].split('/')[-1]} ({page['page_type']})".upper()
-                    text_parts.append((label, page["content"]))
-                
-                # Recombine all text including new pages
-                combined = combine_texts(text_parts)
-                all_source_urls.extend([p["url"] for p in new_pages])
-                
-                # ── STEP 6.6: LLM extraction (Pass 2) ─────────────────────────
-                logger.info(
-                    f"[orchestrator] {scrape_id} — starting extraction pass 2 "
-                    f"with {len(new_pages)} additional pages"
+                # First, check if missing content is in already-fetched pages
+                found_in_existing = await check_existing_pages_for_content(
+                    pages_data, gap_analysis["missing_fields"]
                 )
                 
-                extracted = await extract_fields(
-                    combined, final_url, context_hint, pages_data,
-                    content_format=content_format,
+                if found_in_existing:
+                    logger.info(
+                        f"[orchestrator] {scrape_id} — found content in existing pages: "
+                        f"{found_in_existing}"
+                    )
+                
+                # Fetch additional pages suggested by gap analysis
+                new_pages = await targeted_recrawl(
+                    final_url,
+                    gap_analysis["suggested_page_types"],
+                    pages_data,
+                    max_new_pages=5,
                 )
                 
-                llm_model_used = extracted.pop("_model_used", method_used)
-                
-                logger.info(
-                    f"[orchestrator] {scrape_id} — pass 2 complete, "
-                    f"checking if gaps filled"
-                )
+                if new_pages:
+                    logger.info(
+                        f"[orchestrator] {scrape_id} — fetched {len(new_pages)} additional pages"
+                    )
+                    
+                    # Add new pages to pages_data
+                    pages_data.extend(new_pages)
+                    
+                    # Add new content to text_parts for re-extraction
+                    for page in new_pages:
+                        label = f"{page['url'].split('/')[-1]} ({page['page_type']})".upper()
+                        text_parts.append((label, page["content"]))
+                    
+                    # Recombine all text including new pages
+                    combined = combine_texts(text_parts)
+                    all_source_urls.extend([p["url"] for p in new_pages])
+                    
+                    # ── STEP 6.6: LLM extraction (Pass 2) ─────────────────────────
+                    logger.info(
+                        f"[orchestrator] {scrape_id} — starting extraction pass 2 "
+                        f"with {len(new_pages)} additional pages"
+                    )
+                    
+                    extracted = await extract_fields(
+                        combined, final_url, context_hint, pages_data,
+                        content_format=content_format,
+                    )
+                    
+                    llm_model_used = extracted.pop("_model_used", method_used)
+                    
+                    logger.info(
+                        f"[orchestrator] {scrape_id} — pass 2 complete, "
+                        f"checking if gaps filled"
+                    )
+                else:
+                    logger.info(
+                        f"[orchestrator] {scrape_id} — no additional pages found, "
+                        f"proceeding with pass 1 results"
+                    )
             else:
                 logger.info(
-                    f"[orchestrator] {scrape_id} — no additional pages found, "
-                    f"proceeding with pass 1 results"
+                    f"[orchestrator] {scrape_id} — all critical fields present, "
+                    f"skipping gap detection"
                 )
-        else:
-            logger.info(
-                f"[orchestrator] {scrape_id} — all critical fields present, "
-                f"skipping gap detection"
-            )
 
         # ── STEP 7: Build field_sources attribution ───────────────────────────
         from pipeline.ai_extractor import calculate_page_relevance_score
@@ -328,20 +337,84 @@ async def run_scrape(scrape_id: str, url: str, context_hint: str = "") -> None:
 
         extracted["field_sources"] = field_sources
 
+        # ── STEP 7.5: AI Enrichment Pass — fills nulls via Gemini inference ──────
+        ai_generated_fields: dict = {}
+        if settings.gemini_api_key:
+            try:
+                from pipeline.ai_enrichment import run_ai_enrichment
+                logger.info(f"[orchestrator] {scrape_id} — starting AI enrichment pass")
+                extracted, ai_generated_fields = await run_ai_enrichment(extracted, final_url)
+                if ai_generated_fields:
+                    logger.info(
+                        f"[orchestrator] {scrape_id} — AI enriched: "
+                        f"{list(ai_generated_fields.keys())}"
+                    )
+            except Exception as enrich_exc:
+                logger.warning(f"[orchestrator] {scrape_id} — AI enrichment failed: {enrich_exc}")
+        else:
+            logger.debug("[orchestrator] AI enrichment skipped — SERPAPI or OPENROUTER not configured")
+
+        # ── STEP 7.6: Post-extraction normalization ───────────────────────────
+        # Fix 1: university_name fallback from URL hostname
+        if not extracted.get("university_name"):
+            from urllib.parse import urlparse
+            hostname = urlparse(final_url).hostname or ""
+            # Strip www. and TLD, title-case what's left
+            # e.g. "www.astate.edu" → "Astate", "www.manchester.ac.uk" → "Manchester"
+            parts = hostname.replace("www.", "").split(".")
+            name_part = parts[0] if parts else hostname
+            # Common known mappings
+            HOSTNAME_MAP = {
+                "astate":      "Arkansas State University",
+                "manchester":  "University of Manchester",
+                "mcgill":      "McGill University",
+                "purdue":      "Purdue University",
+                "sydney":      "University of Sydney",
+                "mit":         "Massachusetts Institute of Technology",
+                "harvard":     "Harvard University",
+                "stanford":    "Stanford University",
+                "ox":          "University of Oxford",
+                "cam":         "University of Cambridge",
+                "ed":          "University of Edinburgh",
+                "ucl":         "University College London",
+                "imperial":    "Imperial College London",
+                "lse":         "London School of Economics",
+            }
+            extracted["university_name"] = HOSTNAME_MAP.get(
+                name_part.lower(), name_part.replace("-", " ").title()
+            )
+            logger.info(
+                f"[orchestrator] university_name derived from URL: {extracted['university_name']}"
+            )
+
+        # Fix 2: Normalise tuition_fees.currency symbol → ISO 3-letter code
+        fees = extracted.get("tuition_fees")
+        if isinstance(fees, dict) and fees.get("currency"):
+            SYMBOL_TO_CODE = {
+                "$": "USD", "£": "GBP", "€": "EUR",
+                "A$": "AUD", "C$": "CAD", "S$": "SGD",
+                "HK$": "HKD", "NZ$": "NZD",
+            }
+            raw_currency = str(fees["currency"]).strip()
+            if raw_currency in SYMBOL_TO_CODE:
+                fees["currency"] = SYMBOL_TO_CODE[raw_currency]
+                extracted["tuition_fees"] = fees
+
         # ── STEP 8: Save to MongoDB ───────────────────────────────────────────
         status = _determine_status(extracted)
         elapsed = time.monotonic() - start_time
 
         update_doc = {
             **extracted,
-            "status":          status,
-            "source_urls":     all_source_urls,
-            "completed_at":    _utcnow(),
-            "method_used":     method_used,
-            "tier_used":       tier_used,
-            "pages_fetched":   len(pages_data),
-            "llm_model":       llm_model_used,
-            "elapsed_seconds": round(elapsed, 2),
+            "status":              status,
+            "source_urls":         all_source_urls,
+            "completed_at":        _utcnow(),
+            "method_used":         method_used,
+            "tier_used":           tier_used,
+            "pages_fetched":       len(pages_data),
+            "llm_model":           llm_model_used,
+            "elapsed_seconds":     round(elapsed, 2),
+            "ai_generated_fields": ai_generated_fields,  # {} if none enriched
         }
         if update_doc.get("english_requirements") is None:
             update_doc.pop("english_requirements", None)

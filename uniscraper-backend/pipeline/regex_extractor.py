@@ -71,14 +71,16 @@ _FEE_CONTEXT = re.compile(
 )
 # Domestic/home fee context — look for UK/Home/domestic labels near fee amounts
 _DOMESTIC_FEE_CONTEXT = re.compile(
-    r"(?:UK|home|domestic|resident|in-state|home\s+student|UK\s+student|home\s+fee|arkansas\s+resident)"
-    r"[^\n]{0,200}",
+    r"(?:UK|home|domestic|resident|in-state|home\s+student|UK\s+student|home\s+fee|arkansas\s+resident|"
+    r"graduate\s+resident|grad\s+resident)"
+    r"[^\n]{0,300}",
     re.IGNORECASE,
 )
 # International fee context — expanded for US universities
 _INTERNATIONAL_FEE_CONTEXT = re.compile(
-    r"(?:international|overseas|non-EU|non-UK|non-resident|out-of-state|foreign\s+student)"
-    r"[^\n]{0,200}",
+    r"(?:international|overseas|non-EU|non-UK|non-resident|out-of-state|foreign\s+student|"
+    r"graduate\s+non-resident|grad\s+non-resident|nonresident)"
+    r"[^\n]{0,300}",
     re.IGNORECASE,
 )
 
@@ -355,10 +357,19 @@ def apply_regex_fallbacks(result: dict, hints: dict, text: str) -> dict:
             eng["pte"] = hints["pte"]
         result["english_requirements"] = eng
 
-    # Duration fallback
+    # Duration fallback — only apply if LLM returned null AND did NOT flag ambiguity in confidence_notes
+    # If confidence_notes mentions the duration is from a different program, skip the fallback
     if not result.get("program_duration") and hints.get("duration"):
-        logger.info(f"[regex_extractor] duration fallback: {hints['duration']}")
-        result["program_duration"] = hints["duration"]
+        confidence = (result.get("confidence_notes") or "").lower()
+        duration_ambiguous = any(phrase in confidence for phrase in [
+            "duration", "early college", "different program", "not explicitly stated",
+            "3 years", "years mentioned", "not the mba", "not stated for",
+        ])
+        if duration_ambiguous:
+            logger.info(f"[regex_extractor] duration fallback SKIPPED — LLM flagged ambiguity: {hints['duration']}")
+        else:
+            logger.info(f"[regex_extractor] duration fallback: {hints['duration']}")
+            result["program_duration"] = hints["duration"]
 
     # GPA fallback
     if not result.get("min_academic_requirement") and hints.get("gpa"):
@@ -400,6 +411,19 @@ def apply_regex_fallbacks(result: dict, hints: dict, text: str) -> dict:
             fees["international"] = hints["international_fee"]
             result["tuition_fees"] = fees
 
+    # International fee rescue — if LLM put international fee info in notes, promote it
+    if isinstance(fees, dict) and not fees.get("international") and fees.get("notes"):
+        notes_lower = fees["notes"].lower()
+        # Look for explicit international tuition mention in notes
+        intl_match = re.search(
+            r'international\s+tuition[^\d]*(\$[\d,]+(?:\.\d{1,2})?\s*(?:/credit\s+hour|per\s+credit|/year|per\s+year)?)',
+            fees["notes"], re.IGNORECASE
+        )
+        if intl_match:
+            fees["international"] = intl_match.group(1).strip()
+            result["tuition_fees"] = fees
+            logger.info(f"[regex_extractor] international fee rescued from notes: {fees['international']}")
+
     # Fee currency fallback: if we have amounts but no currency
     if isinstance(fees, dict) and not fees.get("currency") and hints.get("fee_amounts"):
         for amount in hints["fee_amounts"]:
@@ -409,6 +433,18 @@ def apply_regex_fallbacks(result: dict, hints: dict, text: str) -> dict:
                     fees["currency"] = code
                     result["tuition_fees"] = fees
                     break
+
+    # Normalise currency symbol → ISO code (in case LLM returned "$" instead of "USD")
+    if isinstance(fees, dict) and fees.get("currency"):
+        _SYMBOL_TO_CODE = {
+            "$": "USD", "£": "GBP", "€": "EUR",
+            "A$": "AUD", "C$": "CAD", "S$": "SGD",
+            "HK$": "HKD", "NZ$": "NZD",
+        }
+        raw = str(fees["currency"]).strip()
+        if raw in _SYMBOL_TO_CODE:
+            fees["currency"] = _SYMBOL_TO_CODE[raw]
+            result["tuition_fees"] = fees
 
     return result
 

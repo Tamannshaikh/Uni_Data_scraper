@@ -91,6 +91,7 @@ export interface ScrapeRecord {
   // Metadata
   confidence_notes?: string | null;
   field_sources?: Record<string, string> | null;
+  ai_generated_fields?: Record<string, boolean> | null;  // field -> true if AI-generated
   elapsed_seconds?: number | null;
   method_used?: string | null;
   tier_used?: number | null;          // 1 (Crawl4AI), 2 (Firecrawl), or 3 (httpx)

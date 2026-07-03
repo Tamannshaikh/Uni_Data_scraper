@@ -76,6 +76,7 @@ async def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks
         "other_requirements": None,
         "confidence_notes": None,
         "field_sources": None,
+        "ai_generated_fields": {},
     }
 
     await database.scrape_results_collection.insert_one(initial_doc)

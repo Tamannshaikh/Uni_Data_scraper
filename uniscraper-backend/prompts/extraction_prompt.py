@@ -57,12 +57,13 @@ PRECISION RULES — these are the most important:
    
    **EXAMPLES:**
    - UK pages: "Home: £9,535/year" and "International: £33,700/year" — extract both.
-   - US pages: "Arkansas Resident: $530/credit hour" and "Non-Resident: $590/credit hour"
+   - US pages: "Arkansas Resident: $530/credit hour" → domestic; "International Tuition $521.00/credit hour" → international
    - Breakdown pages: Extract total AND itemized breakdown
    
+   **IMPORTANT — per-credit-hour rates**: If separate domestic and international per-credit-hour rates are stated (even in a notes section), put them in `domestic` and `international` respectively. Do NOT put them only in `notes`.
+   
    Always include the currency symbol/code (e.g. "£9,535 per year", "$590 per credit hour").
-   Currency field: use the 3-letter code (GBP, USD, CAD, AUD, EUR, SGD).
-   If only one fee is stated, put it in the most appropriate field (domestic or international).
+   Currency field: use the ISO 3-letter code ONLY — GBP, USD, CAD, AUD, EUR, SGD, NZD, HKD. Never use "$" or "£" in the currency field.
    
    IMPORTANT: The tuition fees may be on a DIFFERENT PAGE from the main program page.
    Look for sections labeled "TUITION", "FEES INFORMATION", "ESTIMATED COSTS", "COST OF ATTENDANCE" etc.
@@ -78,8 +79,12 @@ PRECISION RULES — these are the most important:
 8. PTE: Extract exact overall score.
    Good: "65 overall, minimum 58 in each communicative skill"
 
-9. DURATION: Extract exact duration with unit.
+9. DURATION: Extract exact duration WITH UNIT for the SPECIFIC PROGRAM stated in the source URL/context hint.
+   IMPORTANT: Multiple programs may appear in the text (e.g., sibling MBA concentrations, early college programs).
+   ONLY extract duration for the program matching the source URL or context hint.
+   If the page lists several programs with different durations, use the one matching the queried program.
    Good: "12 months full-time" or "1-2 years"  |  Bad: null when text says "one year"
+   If no duration is explicitly stated for the target program, return null — do NOT grab duration from an unrelated program.
 
 10. DEADLINES: Extract exact dates. Include round names if present.
     Good: "Round 1: 15 January 2026; Round 2: 15 March 2026"

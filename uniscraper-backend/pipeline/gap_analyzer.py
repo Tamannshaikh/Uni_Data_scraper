@@ -259,39 +259,66 @@ async def analyze_missing_fields_with_ai(
     pages_data: list[dict],
 ) -> Optional[dict]:
     """
-    Use Gemini to analyze missing fields and suggest page types.
-    This is an optional enhancement over the rule-based approach.
-    
-    Returns None if API call fails, falling back to rule-based analysis.
+    Use OpenRouter (primary) or Gemini direct (fallback) to analyze missing fields.
+    Returns None if all calls fail, falling back to rule-based analysis.
     """
-    if not settings.gemini_api_key:
-        logger.warning("[gap_analyzer] No Gemini API key, skipping AI analysis")
-        return None
-    
-    # Prepare extracted data summary
+    # Prepare prompt
     extracted_json = json.dumps({
         k: v for k, v in extracted_data.items()
         if k in CRITICAL_FIELDS or k in ["university_name", "program_name"]
     }, indent=2)
-    
-    # Prepare pages info
     pages_info = "\n".join([
         f"- {page.get('url', 'unknown')} ({page.get('page_type', 'unknown')})"
-        for page in pages_data[:10]  # Limit to first 10 pages
+        for page in pages_data[:10]
     ])
-    
     prompt = GAP_ANALYSIS_PROMPT.format(
         extracted_json=extracted_json,
         pages_info=pages_info
     )
-    
+
+    # ── PRIMARY: OpenRouter ───────────────────────────────────────────────────
+    if settings.openrouter_api_key:
+        try:
+            or_model = getattr(settings, "openrouter_model", "google/gemini-2.5-flash")
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {settings.openrouter_api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://uniscraper.app",
+                        "X-Title": "UniScraper",
+                    },
+                    json={
+                        "model": or_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.1,
+                        "max_tokens": 500,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+                if resp.status_code == 200:
+                    text = resp.json()["choices"][0]["message"]["content"]
+                    text = re.sub(r"```(?:json)?\s*", "", text).strip()
+                    match = re.search(r"\{.*\}", text, re.DOTALL)
+                    if match:
+                        result = json.loads(match.group())
+                        logger.info(f"[gap_analyzer] OpenRouter analysis: {result.get('reasoning', '')}")
+                        return result
+        except Exception as exc:
+            logger.warning(f"[gap_analyzer] OpenRouter failed: {exc}")
+
+    # ── FALLBACK: Gemini direct ───────────────────────────────────────────────
+    if not settings.gemini_api_key:
+        logger.warning("[gap_analyzer] No Gemini API key, skipping AI analysis")
+        return None
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             url = (
                 "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"gemini-2.0-flash-exp:generateContent?key={settings.gemini_api_key}"
+                f"gemini-2.5-flash:generateContent?key={settings.gemini_api_key}"
             )
-            
             response = await client.post(
                 url,
                 json={
@@ -302,24 +329,18 @@ async def analyze_missing_fields_with_ai(
                     }
                 }
             )
-            
             if response.status_code != 200:
                 logger.warning(f"[gap_analyzer] Gemini API error: {response.status_code}")
                 return None
-            
             data = response.json()
             text = data["candidates"][0]["content"]["parts"][0]["text"]
-            
-            # Extract JSON from response
             text = re.sub(r"```(?:json)?\s*", "", text).strip()
             match = re.search(r"\{.*\}", text, re.DOTALL)
             if match:
                 result = json.loads(match.group())
-                logger.info(f"[gap_analyzer] AI analysis complete: {result.get('reasoning', '')}")
+                logger.info(f"[gap_analyzer] Gemini analysis: {result.get('reasoning', '')}")
                 return result
-            
             return None
-            
     except Exception as exc:
         logger.warning(f"[gap_analyzer] AI analysis failed: {exc}")
         return None
