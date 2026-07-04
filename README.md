@@ -37,6 +37,8 @@ Type a university name → discover all available programs → click to scrape a
 3. **Program List** — displays grouped, filterable results (PhD / MBA / Master's / Bachelor's)
 4. **One-click Scrape** — clicking any program card immediately triggers the Phase 1 pipeline
 
+**⚠️ Note:** Phase 2 works well with some universities (Arkansas State, McGill, etc.) but may not find programs for all universities due to varying website structures, anti-bot protections, and catalog layouts. Phase 1 (single URL scraping) remains the most reliable method for extracting admission data.
+
 ---
 
 ## Architecture
@@ -119,11 +121,18 @@ domain resolved
 
 ### Performance
 
-| University | Domain method | Programs found | Time |
-|---|---|---|---|
-| Arkansas State University | Heuristic | 16 | ~56s |
-| McGill University | Heuristic | 6–8 | ~50–90s |
-| University of Melbourne | SerpAPI (WAF-blocked) | varies | ~90s |
+| University | Domain method | Programs found | Time | Notes |
+|---|---|---|---|---|
+| Arkansas State University | Heuristic | 16 | ~56s | ✅ Works well |
+| McGill University | Heuristic | 6–8 | ~50–90s | ✅ Works well |
+| University of Melbourne | SerpAPI (WAF-blocked) | varies | ~90s | ⚠️ Partial results |
+
+**Discovery Reliability:** Phase 2 discovery works well with universities that have:
+- Standard program catalog structures (`/programs/`, `/academics/`, etc.)
+- Accessible BFS-friendly navigation
+- Minimal anti-bot protections
+
+Universities with heavy JavaScript rendering, strong WAF protection, or non-standard catalog layouts may return limited or no results. For best results, use Phase 1 (direct URL scraping) for critical data extraction.
 
 Results are cached in MongoDB for 24 hours — repeat searches are instant.
 
