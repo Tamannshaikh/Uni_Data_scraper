@@ -29,6 +29,18 @@ function ScrapePage() {
   const navigate = useNavigate();
   const resultsRef = useRef<HTMLDivElement>(null);
 
+  // Pick up scrape launched from the "Find Programs" discover page
+  useEffect(() => {
+    const id = sessionStorage.getItem("activeScrapeId");
+    const ts = sessionStorage.getItem("activeScrapeStartedAt");
+    if (id) {
+      setActiveId(id);
+      setStartedAt(ts ? Number(ts) : Date.now());
+      sessionStorage.removeItem("activeScrapeId");
+      sessionStorage.removeItem("activeScrapeStartedAt");
+    }
+  }, []);
+
   const startScrape = useMutation({
     mutationFn: (vars: { url: string; hint?: string }) =>
       api.startScrape(vars.url, vars.hint),

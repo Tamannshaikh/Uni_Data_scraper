@@ -29,12 +29,17 @@ def get_db():
 # Collection references — used throughout the app
 scrape_results_collection = None
 batch_jobs_collection = None
+discovery_results_collection = None
+api_usage_collection = None
 
 def init_collections():
     global scrape_results_collection, batch_jobs_collection
+    global discovery_results_collection, api_usage_collection
     db = get_db()
     scrape_results_collection = db["scrape_results"]
     batch_jobs_collection = db["batch_jobs"]
+    discovery_results_collection = db["discovery_results"]
+    api_usage_collection = db["api_usage"]
 
 # Initialize on import
 init_collections()

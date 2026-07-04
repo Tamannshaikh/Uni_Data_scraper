@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     max_concurrent_fetches: int = 12  # parallel fetch limit — increased for speed
     min_page_words: int = 30  # minimum words to keep a page
     max_pdfs: int = 2
-    llm_model: str = "gemini-2.5-flash-lite"
+    llm_model: str = "google/gemini-2.5-flash"
+    openrouter_model: str = "google/gemini-2.5-flash"
     llm_max_tokens: int = 4000
     llm_context_limit: int = 50000  # increased to 50k chars (well within 1M token limit)
     scrape_delay_seconds: int = 7   # delay between scrapes when testing multiple URLs
@@ -30,6 +31,24 @@ class Settings(BaseSettings):
     firecrawl_api_key: str = ""
     crawl4ai_enabled: bool = True
     firecrawl_enabled: bool = True
+
+    # ── Phase 2: Program discovery ─────────────────────────────────────────────
+    jina_api_key: str = ""  # Jina AI Search — 10M free tokens, primary discovery engine
+    serpapi_key: str = ""
+    serpapi_enabled: bool = True
+    searchapi_key: str = ""  # Fallback when SerpAPI limit exhausted
+    searchapi_enabled: bool = True
+    searxng_url: str = ""  # Local: http://localhost:8080, Public: https://search.inetol.net
+    # Client-approved scope: 30-50 graduate programs per university.
+    # Midpoint of range. Tune via env var without code changes.
+    max_programs_per_university: int = 40
+
+    # ── Google Vertex AI (recommended by reviewers) ───────────────────────────
+    vertex_project_id: str = ""  # Your GCP project ID
+    google_application_credentials: str = ""  # Path to service account JSON
+    vertex_enabled: bool = False  # Set to true once credentials are configured
+    vertex_location: str = "us-central1"  # GCP region for Vertex AI
+    vertex_model: str = "gemini-2.0-flash-exp"  # Vertex model to use
 
     @property
     def cors_origins_list(self) -> List[str]:

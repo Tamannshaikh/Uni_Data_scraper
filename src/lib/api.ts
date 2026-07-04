@@ -8,6 +8,35 @@ const V1 = `${API_BASE}/api/v1`;
 
 export type ScrapeStatus = "processing" | "running" | "success" | "partial" | "failed";
 
+// ── Phase 2: Discovery types ──────────────────────────────────────────────────
+export type DiscoveryStatus =
+  | "processing"
+  | "running"
+  | "success"
+  | "failed"
+  | "no_programs_found"
+  | "cached";
+
+export interface DiscoveredProgram {
+  program_name: string;
+  degree_level: string;
+  url: string;
+}
+
+export interface DiscoveryRecord {
+  discovery_id: string;
+  university_name: string;
+  status: DiscoveryStatus;
+  domain?: string | null;
+  domain_method?: string | null;
+  domain_confidence?: string | null;
+  programs?: DiscoveredProgram[];
+  programs_count?: number;
+  elapsed_seconds?: number | null;
+  error?: string | null;
+  reason?: string | null;
+}
+
 // Matches the backend ScrapeResult Pydantic model exactly
 export interface EnglishRequirements {
   ielts?: string | null;
@@ -62,6 +91,7 @@ export interface ScrapeRecord {
   // Metadata
   confidence_notes?: string | null;
   field_sources?: Record<string, string> | null;
+  ai_generated_fields?: Record<string, boolean> | null;  // field -> true if AI-generated
   elapsed_seconds?: number | null;
   method_used?: string | null;
   tier_used?: number | null;          // 1 (Crawl4AI), 2 (Firecrawl), or 3 (httpx)
@@ -127,6 +157,18 @@ export const api = {
     fetch(`${V1}/scrape/${id}`, { method: "DELETE" }).then((r) => {
       if (!r.ok && r.status !== 404) throw new Error("delete failed");
     }),
+
+  // ── Phase 2: University program discovery ─────────────────────────────────
+
+  // POST /api/v1/discover — start discovery
+  startDiscover: (university_name: string) =>
+    http<{ discovery_id: string; status: string }>(`${V1}/discover`, {
+      method: "POST",
+      body: JSON.stringify({ university_name }),
+    }),
+
+  // GET /api/v1/discover/:id — poll for results
+  getDiscover: (id: string) => http<DiscoveryRecord>(`${V1}/discover/${id}`),
 };
 
 // ── Display helpers ───────────────────────────────────────────────────────────

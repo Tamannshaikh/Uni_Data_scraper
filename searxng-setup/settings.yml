@@ -1,0 +1,56 @@
+# SearXNG settings to avoid bot detection
+
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "SearXNG"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+
+server:
+  port: 8080
+  bind_address: "0.0.0.0"
+  secret_key: "ultrasecretkey123456789"  # Change this in production
+  limiter: false  # Disable rate limiting for local use
+  image_proxy: false
+
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 15.0
+  pool_connections: 100
+  pool_maxsize: 20
+  enable_http2: true
+  # User agents rotation to avoid bot detection
+  useragent_suffix: ""
+  
+engines:
+  # Enable multiple engines with delays to avoid rate limiting
+  - name: google
+    disabled: false
+    
+  - name: bing
+    disabled: false
+    
+  - name: duckduckgo
+    disabled: false
+    
+  - name: brave
+    disabled: false
+    
+  - name: qwant
+    disabled: false
+    
+  - name: startpage
+    disabled: false
+
+# Disable engines that are likely to cause issues
+# Keep lightweight engines for better reliability
+enabled_plugins:
+  - 'Hash plugin'
+  - 'Self Information'
+  - 'Tracker URL remover'
+  - 'Ahmia blacklist'
