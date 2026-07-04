@@ -2,11 +2,14 @@
 
 A full-stack AI extraction system that scrapes university program pages and structures admission data into a clean, queryable format. Built for the AutoNova Pod internship challenge.
 
-**What's in this branch (`feature/three-tier-pipeline-crawl4ai`):**
-- ✅ **Phase 2 — University Program Discovery** — search by university name, get all programs, click to scrape
+**Features:**
+- ✅ **Phase 1 — Single URL Scraping** — Extract structured admission data from any program URL
+- ✅ **Phase 2 — University Program Discovery** — Search by university name, discover all programs, click to scrape
 - ✅ **Three-Tier Fetching Pipeline** — Custom → Firecrawl → Crawl4AI waterfall for maximum reliability
-- ✅ **Gap Detection & Targeted Recrawl** — detects missing critical fields and fetches additional pages
-- ✅ **Anti-Hallucination Rules** — Gemini never invents data; all values traced to source URLs
+- ✅ **Four-Tier AI Extraction** — Google Vertex AI → Gemini API → Groq → Ollama fallback chain
+- ✅ **Multi-Search Discovery** — Jina AI → SerpAPI → SearchAPI for comprehensive program finding
+- ✅ **Gap Detection & Targeted Recrawl** — Detects missing critical fields and fetches additional pages
+- ✅ **Anti-Hallucination Rules** — AI models never invent data; all values traced to source URLs
 
 ---
 
@@ -42,16 +45,18 @@ Type a university name → discover all available programs → click to scrape a
 Frontend (React 19 + TanStack Router)
     │
     ├── /            Single URL scraper (Phase 1)
-    ├── /discover    University search + program discovery (Phase 2)  ← NEW
+    ├── /discover    University search + program discovery (Phase 2)
     ├── /batch       Multi-URL batch scraper
     └── /history     Past results archive
     │
     └── FastAPI Backend (Python 3.11+)
             │
-            ├── Phase 2: Discovery Pipeline             ← NEW
-            │     ├── Domain Resolver                   heuristic + SerpAPI fallback
+            ├── Phase 2: Discovery Pipeline
+            │     ├── Domain Resolver                   heuristic + search API fallback
             │     ├── Program Discovery                 BFS crawler with scoring
-            │     ├── SerpAPI Client                    fallback for WAF-blocked sites
+            │     ├── Jina AI Search                    primary search engine (10M free tokens)
+            │     ├── SerpAPI Client                    fallback #1 for blocked sites
+            │     ├── SearchAPI Client                  fallback #2 when SerpAPI exhausted
             │     └── Discovery Orchestrator            async + 24h MongoDB cache
             │
             ├── Phase 1: Scrape Pipeline
@@ -61,7 +66,7 @@ Frontend (React 19 + TanStack Router)
             │     │     └── Tier 3: Crawl4AI                     [DEEP CRAWL]
             │     │
             │     ├── Page Classifier       admissions / english / tuition / etc.
-            │     ├── AI Extractor (Pass 1) Gemini 2.5 Flash → Groq → Ollama
+            │     ├── AI Extractor (Pass 1) Vertex AI → Gemini → Groq → Ollama
             │     ├── Gap Analyzer          detects missing critical fields
             │     ├── Targeted Recrawl      fetches 2–5 more pages if gaps found
             │     ├── AI Extractor (Pass 2) re-extraction with new pages
@@ -131,10 +136,9 @@ Results are cached in MongoDB for 24 hours — repeat searches are instant.
 | Frontend | React 19, TanStack Router/Query/Start, Tailwind CSS v4, shadcn/ui |
 | Backend | FastAPI, Python 3.11+, asyncio |
 | Crawling | Tier 1: Custom (httpx + Playwright), Tier 2: Firecrawl, Tier 3: Crawl4AI |
-| Discovery | BFS crawler + SerpAPI (free tier) |
+| Discovery | BFS crawler + Jina AI Search + SerpAPI + SearchAPI |
 | Database | MongoDB Atlas (Motor async driver) |
-| Primary LLM | Gemini 2.5 Flash |
-| Fallback LLMs | Groq → Ollama (qwen2.5:1.5b) |
+| AI Extraction | Vertex AI → Gemini 2.5 Flash → Groq → Ollama (qwen2.5:1.5b) |
 | HTML parsing | BeautifulSoup + lxml |
 
 ---
@@ -162,14 +166,25 @@ Required `.env` values:
 GEMINI_API_KEY=your_gemini_key
 MONGODB_URI=your_mongodb_atlas_uri
 
-# Phase 2 — program discovery
-SERPAPI_KEY=your_serpapi_key       # free tier at serpapi.com (no card required)
+# Phase 2 — program discovery (at least one search API required)
+JINA_API_KEY=your_jina_key         # primary, 10M free tokens at jina.ai
+SERPAPI_KEY=your_serpapi_key       # fallback #1, free tier at serpapi.com
+SEARCHAPI_KEY=your_searchapi_key   # fallback #2 when SerpAPI exhausted
 ```
 
-Optional:
+Optional (recommended for production):
 ```env
+# Google Vertex AI (recommended by reviewers for higher quotas)
+VERTEX_ENABLED=true
+VERTEX_PROJECT_ID=your_gcp_project_id
+GOOGLE_APPLICATION_CREDENTIALS=./credentials/vertex-key.json
+
+# Enhanced fetching
 FIRECRAWL_API_KEY=your_key         # Tier 2 fetching
 CRAWL4AI_ENABLED=true              # Tier 3 fetching
+
+# Additional AI fallbacks
+GROQ_API_KEY=your_key              # Fast fallback LLM
 ```
 
 ### Frontend
@@ -259,8 +274,10 @@ Every extracted value has a `field_sources` entry with the exact source URL.
 
 ## Rate limiting
 
-- **Gemini:** self-throttles to 3 RPM (semaphore + 20s gap + rolling window)
+- **Vertex AI / Gemini:** self-throttles to 3 RPM (semaphore + 20s gap + rolling window)
 - **On 429:** auto-fallback Groq → Ollama → Gemini Flash-Lite
 - **Batch:** 25s stagger between URLs
 - **Discovery:** 3-concurrent max on index path checks, 5-concurrent on BFS
+- **Jina AI:** tracked per request, free 10M tokens
 - **SerpAPI:** tracked monthly, warns at 80 calls (free tier ~100/month)
+- **SearchAPI:** used as final fallback when other search APIs exhausted

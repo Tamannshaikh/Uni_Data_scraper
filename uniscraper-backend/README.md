@@ -10,7 +10,10 @@ Scrapes program pages, extracts structured admission data using a hybrid LLM pip
 - Python 3.11+
 - MongoDB (local or Atlas)
 - Gemini API key — [get one free](https://aistudio.google.com/)
-- SerpAPI key — [free tier at serpapi.com](https://serpapi.com/users/sign_up) (Phase 2 discovery, no card required)
+- At least one search API for discovery:
+  - Jina AI key (recommended, primary) — [10M free tokens at jina.ai](https://jina.ai/)
+  - SerpAPI key — [free tier at serpapi.com](https://serpapi.com/users/sign_up) (fallback #1)
+  - SearchAPI key — [searchapi.io](https://www.searchapi.io/) (fallback #2)
 - Ollama (optional, for local LLM fallback) — [install](https://ollama.com/)
 
 ---
@@ -45,7 +48,14 @@ Automatically used when Gemini hits rate limits.
 |---|---|---|
 | `GEMINI_API_KEY` | ✅ | Google Gemini API key |
 | `MONGODB_URI` | ✅ | MongoDB connection string |
-| `SERPAPI_KEY` | ✅ (Phase 2) | SerpAPI key for program discovery fallback |
+| `JINA_API_KEY` | ✅ (Primary) | Jina AI Search key for program discovery (10M free tokens) |
+| `SERPAPI_KEY` | Recommended | SerpAPI key for discovery fallback #1 (~100 free/month) |
+| `SEARCHAPI_KEY` | Recommended | SearchAPI key for discovery fallback #2 |
+| `VERTEX_ENABLED` | | Enable Google Vertex AI (default: `false`) |
+| `VERTEX_PROJECT_ID` | If Vertex | Your GCP project ID |
+| `GOOGLE_APPLICATION_CREDENTIALS` | If Vertex | Path to service account JSON |
+| `VERTEX_LOCATION` | | GCP region (default: `us-central1`) |
+| `VERTEX_MODEL` | | Vertex model (default: `gemini-2.0-flash-exp`) |
 | `DB_NAME` | | Database name (default: `autonova_scraper`) |
 | `LLM_MODEL` | | Primary model (default: `gemini-2.5-flash`) |
 | `LLM_MAX_TOKENS` | | Max output tokens (default: `4000`) |
@@ -53,10 +63,11 @@ Automatically used when Gemini hits rate limits.
 | `MAX_SUBPAGES` | | Sub-pages fetched per scrape (default: `20`) |
 | `MAX_CONCURRENT_FETCHES` | | Concurrent page fetches (default: `8`) |
 | `MAX_PDFS` | | PDFs extracted per page (default: `2`) |
+| `MAX_PROGRAMS_PER_UNIVERSITY` | | Discovery limit per university (default: `40`) |
 | `CORS_ORIGINS` | | Comma-separated allowed origins |
 | `FIRECRAWL_API_KEY` | | Firecrawl key for Tier 2 fetching |
 | `CRAWL4AI_ENABLED` | | Enable Crawl4AI Tier 3 (default: `true`) |
-| `SERPAPI_ENABLED` | | Enable SerpAPI fallback (default: `true`) |
+| `GROQ_API_KEY` | | Groq API key for fast LLM fallback |
 | `LOG_LEVEL` | | Logging level (default: `INFO`) |
 
 ---
@@ -225,16 +236,18 @@ uniscraper-backend/
 │   ├── tier2_firecrawl.py       Firecrawl API (Tier 2)
 │   ├── tier3_crawl4ai.py        Crawl4AI deep BFS (Tier 3)
 │   ├── fetcher.py               Raw httpx + Playwright fetcher
-│   ├── ai_extractor.py          Gemini → Groq → Ollama with rate limiting
+│   ├── ai_extractor.py          Vertex AI → Gemini → Groq → Ollama with rate limiting
 │   ├── gap_analyzer.py          Detects missing critical fields
 │   ├── targeted_recrawl.py      Fetches pages to fill detected gaps
 │   ├── regex_extractor.py       Pre/post-LLM regex fallback layer
 │   ├── pdf_extractor.py         PDF text extraction
 │   ├── merger.py                Multi-source result merging
-│   ├── domain_resolver.py       University name → domain  ← NEW
-│   ├── program_discovery.py     BFS program page crawler  ← NEW
-│   ├── serpapi_client.py        SerpAPI fallback client  ← NEW
-│   └── discovery_orchestrator.py Phase 2 async pipeline  ← NEW
+│   ├── domain_resolver.py       University name → domain
+│   ├── program_discovery.py     BFS program page crawler
+│   ├── jina_search.py           Jina AI Search client (primary)
+│   ├── serpapi_client.py        SerpAPI fallback client #1
+│   ├── searchapi_client.py      SearchAPI fallback client #2
+│   └── discovery_orchestrator.py Phase 2 async pipeline
 │
 ├── prompts/
 │   └── extraction_prompt.py     Gemini system + user prompt templates
@@ -262,13 +275,16 @@ POST /api/v1/discover {"university_name": "Arkansas State University"}
     │        Try: astate.edu, astate.ac.uk, astate.edu.au, astate.ca
     │        HEAD verify each — first 200 with matching title wins
     │     2. Known overrides: McGill → mcgill.ca, etc.
-    │     3. SerpAPI fallback: search "{name} official website"
+    │     3. Jina AI fallback: search "{name} official website"
+    │     4. SerpAPI fallback: if Jina exhausted
+    │     5. SearchAPI final fallback: if both above fail
     │
     ├── program_discovery.py
     │     1. Probe ~35 common paths (/programs, /study, /colleges...)
     │        on both bare domain and www. prefix
     │        Concurrency: 3 at a time (avoid 429s)
-    │     2. SerpAPI fallback if 0 index pages found
+    │     2. Search API fallback if 0 index pages found
+    │        Jina AI → SerpAPI → SearchAPI
     │        Two queries: graduate programs + general programs
     │        Sibling search for known path patterns
     │     3. BFS from index pages (depth ≤ 3, max 80 pages)
@@ -280,8 +296,8 @@ POST /api/v1/discover {"university_name": "Arkansas State University"}
     │        ✅ Not an admin/nav page
     │        ✅ Title not generic (error 404, search, class profile...)
     │        ✅ Not too many sibling-dir degree links (would be a listing)
-    │     5. SerpAPI post-BFS fallback (if BFS finds 0 programs)
-    │     6. Deduplicate by normalised program name, cap at 200
+    │     5. Search API post-BFS fallback (if BFS finds 0 programs)
+    │     6. Deduplicate by normalised program name, cap at 40
     │
     └── Save to MongoDB (status=success), 24h TTL
 ```
@@ -305,7 +321,7 @@ POST /api/v1/scrape {"url": "..."}
     ├── ai_extractor.py — Pass 1
     │     Field-specific context routing per field type
     │     Regex pre-extraction as anchor hints
-    │     Gemini 2.5 Flash → Groq fallback → Ollama fallback
+    │     Vertex AI → Gemini 2.5 Flash → Groq → Ollama fallback chain
     │     Rate limit: semaphore + 20s gap + 3 RPM rolling window
     │
     ├── gap_analyzer.py
@@ -334,8 +350,11 @@ POST /api/v1/scrape {"url": "..."}
 
 | Service | Limit | Handling |
 |---|---|---|
+| Vertex AI | Higher quotas | Primary extraction model (if enabled) |
 | Gemini | 10 RPM free | Semaphore + 20s gap + rolling 60s window |
 | Gemini 429s | — | Auto-fallback: Groq → Ollama → Flash-Lite |
 | Batch scrapes | — | 25s stagger between URLs |
 | Discovery BFS | — | 3-concurrent index probes, 5-concurrent BFS fetches |
+| Jina AI | 10M tokens free | Primary search, tracked per request |
 | SerpAPI | ~100/month free | Monthly counter in MongoDB, warn at 80 |
+| SearchAPI | Varies | Final fallback when other search APIs exhausted |
