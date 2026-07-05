@@ -463,3 +463,24 @@ To Run:
 └─────────────────────────────────────────────────────────┘
 
 Open http://localhost:5173 in your browser to start using UniScraper!
+
+================================================================================
+                            10. LIVE DEPLOYMENT LINKS
+================================================================================
+
+The project has been successfully deployed and is live! You can access the application and source code using the links below:
+
+🌐 Frontend Website (Vercel)
+   Live Link: https://uniscraper-main.vercel.app
+   Platform : Vercel (Static Site Deployment)
+
+⚙️ Backend API (Hugging Face)
+   Live Link: https://tamanna1234-uniscraper-backend.hf.space
+   Platform : Hugging Face Spaces (Docker / FastAPI)
+
+📦 Source Code (GitHub)
+   Repository: https://github.com/Tamannshaikh/Uni_Data_scraper
+   Platform  : GitHub
+
+Note: The frontend automatically routes API requests to the Hugging Face backend.
+================================================================================
