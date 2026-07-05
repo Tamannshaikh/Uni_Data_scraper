@@ -1,0 +1,28 @@
+services:
+  # 1. FastAPI Backend Service
+  - type: web
+    name: uni-scraper-backend
+    env: python
+    rootDir: uniscraper-backend
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: MONGODB_URI
+        sync: false # Render will ask you for this value securely
+      - key: GEMINI_API_KEY
+        sync: false # Render will ask you for this value securely
+
+  # 2. React Vite Frontend (Static Site)
+  - type: web
+    name: uni-scraper-frontend
+    env: static
+    buildCommand: "npm install && npm run build"
+    staticPublishPath: dist/client
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: uni-scraper-backend
+          envVarKey: RENDER_EXTERNAL_URL
