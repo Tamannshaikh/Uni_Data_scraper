@@ -1,0 +1,465 @@
+================================================================================
+                    UniScraper — Comprehensive Project Documentation
+================================================================================
+
+Welcome to the UniScraper project! This document provides a complete overview of the project's architecture, directory structure, data flow, external integrations, and setup instructions.
+
+================================================================================
+                                1. TECH STACK
+================================================================================
+
+- Frontend:  React 19, TanStack Router/Query/Start, Tailwind CSS v4, shadcn/ui
+- Backend:   FastAPI, Python 3.11+, asyncio
+- Database:  MongoDB Atlas (Motor async driver)
+- Crawling:  Tier 1: httpx + Playwright, Tier 2: Firecrawl, Tier 3: Crawl4AI, Jina Reader
+- Discovery: BFS crawler + SerpAPI + Jina Search
+- LLMs:      Gemini 2.5 Flash → Groq → Ollama (fallback chain)
+- Parsing:   BeautifulSoup + lxml
+
+================================================================================
+                          2. ARCHITECTURE & PIPELINE FLOW
+================================================================================
+
+The application is divided into a React frontend and a FastAPI backend.
+
+[ Frontend (React 19 + TanStack Router) ]
+│
+├── /            : Single URL scraper (Phase 1)
+├── /discover    : University search + program discovery (Phase 2)
+├── /batch       : Multi-URL batch scraper
+└── /history     : Past results archive
+│
+[ FastAPI Backend (Python 3.11+) ]
+│
+├── Phase 2: Discovery Pipeline
+│     ├── Domain Resolver        : Heuristic + SerpAPI fallback
+│     ├── Program Discovery      : BFS crawler with scoring
+│     ├── SerpAPI Client         : Fallback for WAF-blocked sites
+│     ├── Jina Search            : Fast, AI-driven program discovery and search
+│     └── Discovery Orchestrator : Async execution + 24h MongoDB cache
+│
+└── Phase 1: Scrape Pipeline
+      ├── Three-Tier Intelligent Fetching
+      │     ├── Tier 1: Custom (httpx → Playwright)   [FAST]
+      │     ├── Tier 2: Firecrawl                     [CLOUDFLARE]
+      │     ├── Tier 3: Crawl4AI                      [DEEP CRAWL]
+      │     └── Tier 4: Jina Reader                   [CLEAN MARKDOWN]
+      │
+      ├── Page Classifier     : Identifies page types (admissions / english / tuition / etc.)
+      ├── AI Extractor (P1)   : Uses Gemini 2.5 Flash → Groq → Ollama
+      ├── Gap Analyzer        : Detects missing critical fields
+      ├── Targeted Recrawl    : Fetches 2–5 more pages if gaps are found
+      ├── AI Extractor (P2)   : Re-extraction with new pages
+      ├── Regex Extractor     : Pre/post-LLM fallback layer
+      ├── Field Validator     : Semantic sanity checks
+      └── MongoDB             : Saves results + 24h cache
+
+================================================================================
+                              3. PROJECT STRUCTURE
+================================================================================
+
+Below is the complete file and directory structure of the project, explaining the purpose of each major component.
+
+uniscraper-main/
+├── README.md                          # Project documentation
+├── package.json                       # Frontend dependencies & NPM scripts
+├── package-lock.json                  # Locked dependency versions
+├── tsconfig.json & tsconfig.node.json # TypeScript configuration files
+├── vite.config.ts                     # Vite development server + API proxy config
+├── eslint.config.js                   # ESLint configuration for code quality
+├── components.json                    # Configuration for shadcn/ui components
+├── bunfig.toml                        # Bun package manager configuration
+├── wrangler.jsonc                     # Cloudflare Workers configuration
+├── .prettierrc & .prettierignore      # Prettier formatting configurations
+├── .gitignore                         # Git ignore rules
+├── test_api_call.py                   # API integration test script
+│
+├── public/                            # Static assets
+│   └── favicon.svg                    # Application favicon
+│
+├── src/                               # React frontend source code (TypeScript)
+│   ├── start.ts                       # Application bootstrap and entry point
+│   ├── server.ts                      # TanStack Start server entry
+│   ├── router.tsx                     # Router configuration
+│   ├── routeTree.gen.ts               # Auto-generated route tree (TanStack Router)
+│   ├── env.d.ts                       # Environment variable type declarations
+│   ├── styles.css                     # Global styles using Tailwind CSS v4
+│   │
+│   ├── routes/                        # Page routes (file-based routing)
+│   │   ├── __root.tsx                 # Root layout (sidebar + topbar wrapper)
+│   │   ├── index.tsx                  # /         — Single URL scraper (Phase 1)
+│   │   ├── discover.tsx               # /discover — University search & discovery (Phase 2)
+│   │   ├── batch.tsx                  # /batch    — Multi-URL batch scraper
+│   │   └── history.tsx                # /history  — Past results archive
+│   │
+│   ├── components/                    # Reusable UI components
+│   │   ├── ResultsCard.tsx            # Displays the results of a scrape
+│   │   ├── ScrapeTimeline.tsx         # Visualizes scraping progress
+│   │   ├── Sidebar.tsx & TopBar.tsx   # Application navigation components
+│   │   ├── PrimaryButton.tsx          # Custom primary button component
+│   │   ├── NotFound.tsx               # 404 error page component
+│   │   └── ui/                        # Contains 46 shadcn/ui components (buttons, dialogs, etc.)
+│   │
+│   ├── lib/                           # Shared utilities and API clients
+│   │   ├── api.ts                     # API client with fetch wrappers for backend communication
+│   │   ├── utils.ts                   # General utility functions (e.g., class names merger)
+│   │   ├── error-capture.ts           # Utilities for error handling
+│   │   └── error-page.ts              # Helpers for generating error pages
+│   │
+│   └── hooks/                         # Custom React hooks
+│       └── use-mobile.tsx             # Hook for detecting mobile viewports
+│
+└── uniscraper-backend/                # FastAPI backend source code (Python)
+    ├── main.py                        # FastAPI application entry point (uvicorn server)
+    ├── config.py                      # Application settings and environment variable loading
+    ├── database.py                    # MongoDB connection setup using Motor async driver
+    ├── requirements.txt               # List of Python dependencies
+    ├── .env                           # Environment variables (secrets — NOT in git)
+    ├── .env.example                   # Template for .env file setup
+    ├── .gitignore & .watchfilesignore # Ignore rules for Git and file watchers
+    ├── Procfile & railway.toml        # Configurations for deployment platforms
+    ├── README.md                      # Backend-specific documentation
+    ├── README_TIMING_INSTRUMENTATION.md # Documentation on performance timing
+    │
+    ├── models/                        # Pydantic data models and schemas
+    │   ├── scrape_request.py          # Schema for a single scrape request
+    │   ├── scrape_result.py           # Schema for scrape results
+    │   ├── batch_request.py           # Schema for batch scraping requests
+    │   └── discover_request.py        # Schema for discovery requests
+    │
+    ├── routers/                       # FastAPI route handlers (API endpoints)
+    │   ├── scrape.py                  # Endpoints for single URL scraping (Phase 1)
+    │   ├── batch.py                   # Endpoints for batch scraping
+    │   ├── discover.py                # Endpoints for university discovery (Phase 2)
+    │   ├── history.py                 # Endpoints for retrieving scraping history
+    │   └── export.py                  # Endpoints for exporting data to CSV/JSON
+    │
+    ├── pipeline/                      # Core logic for scraping and discovery
+    │   │   # --- Phase 1: Scraping Pipeline ---
+    │   ├── orchestrator.py            # Main orchestrator for the scraping pipeline
+    │   ├── fetcher.py                 # Base class for page fetching
+    │   ├── intelligent_fetcher.py     # Smart fetcher that handles tier fallbacks
+    │   ├── tier1_custom.py            # Tier 1: Custom fetching via httpx & Playwright [FAST]
+    │   ├── tier2_firecrawl.py         # Tier 2: Firecrawl API integration [CLOUDFLARE BYPASS]
+    │   ├── tier3_crawl4ai.py          # Tier 3: Crawl4AI integration [DEEP CRAWL]
+    │   ├── ai_extractor.py            # Manages AI extraction (Gemini → Groq → Ollama)
+    │   ├── regex_extractor.py         # Fallback extraction using regular expressions
+    │   ├── gap_analyzer.py            # Identifies missing fields after initial extraction
+    │   ├── targeted_recrawl.py        # Fetches additional targeted pages to fill data gaps
+    │   ├── merger.py                  # Merges data from multiple extraction passes
+    │   ├── link_extractor.py          # Extracts hyperlinks from parsed HTML pages
+    │   ├── pdf_extractor.py           # Handles content extraction from PDF files
+    │   │
+    │   │   # --- Phase 2: Discovery Pipeline ---
+    │   ├── discovery_orchestrator.py  # Controls the university discovery workflow
+    │   ├── domain_resolver.py         # Resolves university names to their official domains
+    │   ├── program_discovery.py       # Breadth-First Search (BFS) crawler for program pages
+    │   ├── serpapi_client.py          # SerpAPI integration for fallback when sites block crawlers
+    │   ├── jina_search.py             # Jina Search API (s.jina.ai) for discovering program pages
+    │   └── jina_reader.py             # Jina Reader API (r.jina.ai) for fetching markdown content
+    │
+    ├── prompts/                       # LLM prompt templates
+    │   └── extraction_prompt.py       # Specific prompts used for Gemini/Groq extraction
+    │
+    ├── utils/                         # Assorted utility functions
+    │   ├── csv_builder.py             # Generates CSV exports
+    │   ├── field_validators.py        # Performs semantic field validation and sanity checks
+    │   ├── page_classifier.py         # Classifies pages (e.g., admissions, tuition, English reqs)
+    │   ├── section_classifier.py      # Classifies specific HTML sections
+    │   ├── program_filters.py         # Heuristics for filtering program pages
+    │   ├── text_cleaner.py            # Utilities for cleaning HTML and text
+    │   └── url_utils.py               # Utilities for parsing and normalizing URLs
+    │
+    ├── scripts/                       # Development, testing, and operational scripts
+    │   ├── seed_test_data.py          # Seeds test data into the MongoDB database
+    │   ├── test_playwright.py         # Script to test Playwright browser functionality
+    │   ├── test_single_url.py         # Script to test scraping a single URL
+    │   └── validate_universities.py   # Multi-university validation script
+    │
+    └── tests/                         # Automated test suite
+        ├── test_ai_extractor.py       # Unit tests for the AI extractor module
+        ├── test_fetcher.py            # Unit tests for fetching modules
+        ├── test_merger.py             # Unit tests for the merger module
+        ├── test_pipeline.py           # Integration tests for the full pipeline
+        └── validation/                # Comprehensive validation tests and result snapshots
+
+Auto-generated directories (do NOT edit manually):
+uniscraper-main/
+├── dist/                              # Production build output
+├── node_modules/                      # NPM dependencies installed via `npm install`
+├── .vscode/                           # VS Code workspace settings
+├── .tanstack/                         # TanStack auto-generated routing files
+└── test-results/                      # Output files from automated tests
+
+uniscraper-backend/
+├── __pycache__/                       # Python bytecode cache
+├── .pytest_cache/                     # Pytest execution cache
+└── venv/                              # Python virtual environment
+
+================================================================================
+                    4. API ENDPOINTS & DATA FLOW
+================================================================================
+
+This section explains how the frontend and backend communicate for different operations.
+
+[ Client / React UI ]
+│
+├── 📌 PHASE 1: Single URL Scraping (Extracting details of a single program)
+│   │
+│   ├── POST /api/v1/scrape
+│   │    └── Flow: Client sends URL -> DB creates record -> Background Task starts -> Returns 'scrape_id'
+│   │
+│   ├── GET /api/v1/scrape/{id}
+│   │    └── Flow: Client polls every 3s -> Backend checks status -> Returns extracted JSON on success
+│   │
+│   └── DELETE /api/v1/scrape/{id}
+│        └── Flow: Client requests deletion -> DB removes scrape record
+│
+├── 📌 PHASE 2: University Discovery (Finding all academic programs)
+│   │
+│   ├── POST /api/v1/discover
+│   │    └── Flow: Client sends Uni name -> Domain resolved -> Crawler starts -> Returns 'discovery_id'
+│   │
+│   └── GET /api/v1/discover/{id}
+│        └── Flow: Client polls status -> Backend returns list of discovered program URLs
+│
+├── 📌 BATCH PROCESSING (Scraping multiple URLs simultaneously)
+│   │
+│   ├── POST /api/v1/scrapes/batch
+│   │    └── Flow: Client sends URL array -> Tasks queued with stagger -> Returns 'batch_id'
+│   │
+│   └── GET /api/v1/batch/{id}
+│        └── Flow: Client polls batch progress -> Backend returns metrics (done, pending, failed)
+│
+└── 📌 DATA EXPORT & HISTORY
+    │
+    ├── GET /api/v1/scrapes               (Retrieves a paginated history of past scrapes)
+    ├── GET /api/v1/scrapes/export/csv    (Bulk downloads the scraped data in CSV format)
+    └── GET /api/v1/scrapes/export/json   (Downloads the scraped data in raw JSON format)
+
+📌 1. SINGLE URL SCRAPING FLOW (Data Extraction)
+──────────────────────────────────────────────────────────────────────────
+
+Program URL
+        │
+        ▼
+Discover Related Pages
+        │
+        ▼
+20 Relevant URLs
+        │
+        ▼
+FOR EACH URL
+        │
+        ├── HTTPX
+        ├── Playwright
+        ├── Firecrawl
+        ├── Crawl4AI
+        └── Jina Reader
+                │
+                ▼
+Merge Outputs
+                │
+                ▼
+Remove Duplicate Paragraphs
+                │
+                ▼
+Keep Richest Version
+
+
+📌 2. UNIVERSITY DISCOVERY FLOW (Finding Programs)
+──────────────────────────────────────────────────────────────────────────
+
+University Name
+        │
+        ▼
+Resolve Official Domain
+        │
+        ├── Domain Resolver (Heuristics)
+        └── SerpAPI (Fallback)
+                │
+                ▼
+Target Domain Found
+        │
+        ▼
+Run Parallel Discovery
+        │
+        ├── Jina Search (s.jina.ai)
+        ├── SerpAPI (Google Search for Programs)
+        ├── Sitemap Parsing
+        └── BFS Crawler (Breadth-First Search)
+                │
+                ▼
+Merge & Deduplicate URLs
+        │
+        ▼
+Score & Filter URLs (Program Filters)
+        │
+        ▼
+Final List of Program URLs
+
+
+📌 3. BATCH PROCESSING FLOW (Bulk URLs)
+──────────────────────────────────────────────────────────────────────────
+
+Array of Program URLs
+        │
+        ▼
+Initialize Batch in Database
+        │
+        ▼
+Queue URLs with 25s Stagger (Rate Limit Protection)
+        │
+        ▼
+FOR EACH URL IN QUEUE
+        │
+        ├── Execute Single URL Scraping Flow
+        └── Report Status (Success/Fail)
+                │
+                ▼
+Update Overall Batch Progress
+        │
+        ▼
+Batch Complete
+
+================================================================================
+                 5. EXTERNAL APIs & AI SERVICES (Third-Party Tools)
+================================================================================
+
+Alongside the core FastAPI backend, this project leverages several third-party APIs and AI services for advanced scraping and data extraction.
+
+🧠 1. Gemini (Google AI)
+   • Role: Primary Large Language Model (LLM).
+   • Use Case: It processes messy, unstructured HTML text to intelligently extract fees, deadlines, IELTS requirements, and formats the output into structured JSON.
+
+⚡ 2. Groq
+   • Role: High-speed AI API (LLM).
+   • Use Case: Acts as the first fallback. If the Gemini API hits a rate limit or encounters an error, the system automatically routes the extraction task to Groq.
+
+🖥️ 3. Ollama
+   • Role: Local AI model runner.
+   • Use Case: Acts as the ultimate fallback. If both Gemini and Groq fail, the system utilizes a smaller, locally hosted AI model to complete the extraction.
+
+🕷️ 4. Firecrawl
+   • Role: Advanced web scraping API.
+   • Use Case: Operates as the "Tier 2 Fetcher". When a university website blocks standard scraping tools (like Playwright) via Cloudflare or other WAF protections, Firecrawl is used to bypass these firewalls and retrieve the data.
+
+🤖 5. Crawl4AI (Currently inactive per team notes)
+   • Role: Open-source deep crawler API.
+   • Use Case: Operates as the "Tier 3 Fetcher". It is designed to render heavy JavaScript pages and extract clean text.
+
+🔍 6. SerpAPI
+   • Role: Google Search API.
+   • Use Case: Utilized in Phase 2 (Discovery). If our internal crawler cannot navigate a university's site effectively, SerpAPI is used to search Google directly for the university's academic programs.
+
+🔗 7. Jina AI (Search & Reader)
+   • Role: AI-driven search and content extraction APIs.
+   • Use Case: Utilized in Phase 2 (Discovery) to rapidly find relevant program pages using `s.jina.ai`, and fetching clean markdown content using `r.jina.ai`.
+
+================================================================================
+                          6. ENVIRONMENT VARIABLES (.env)
+================================================================================
+
+File location: uniscraper-backend\.env
+
+REQUIRED VARIABLES:
+  GEMINI_API_KEY=your_gemini_key          # Primary LLM (Gemini 2.5 Flash)
+  MONGODB_URI=your_mongodb_atlas_uri      # MongoDB Atlas connection string
+  SERPAPI_KEY=your_serpapi_key            # Used for program discovery (Free tier compatible)
+
+OPTIONAL VARIABLES:
+  GROQ_API_KEY=your_groq_key              # Fallback LLM
+  FIRECRAWL_API_KEY=your_firecrawl_key    # Tier 2 fetching API
+  CRAWL4AI_ENABLED=true                   # Enables Tier 3 fetching
+  JINA_API_KEY=your_jina_key              # Jina Search and Reader API Key
+  JINA_ENABLED=true                       # Enables Jina API integrations
+  DB_NAME=autonova_scraper                # Database name configuration
+  LLM_MODEL=gemini-2.5-flash              # LLM model selection
+  CORS_ORIGINS=http://localhost:5173      # Allowed CORS origins
+
+================================================================================
+                               7. AVAILABLE SCRIPTS
+================================================================================
+
+Frontend Scripts (run via npm in the uniscraper-main directory):
+  npm run dev                        # Start the Vite development server (port 5173)
+  npm run build                      # Create a production-ready build
+  npm run build:dev                  # Create a development build
+  npm run preview                    # Preview the generated production build locally
+  npm run lint                       # Run ESLint to identify code issues
+  npm run format                     # Format the codebase using Prettier
+
+Backend Scripts (run via python in the uniscraper-backend directory):
+  python main.py                     # Start the FastAPI backend server (port 8000)
+  pytest                             # Run the automated test suite
+  python scripts/seed_test_data.py   # Seed the database with sample test data
+  python scripts/validate_universities.py # Execute multi-university validation tests
+
+================================================================================
+                            8. HOW TO RUN (2 Terminals)
+================================================================================
+
+To run the full stack locally, you need two terminal windows: one for the backend and one for the frontend.
+
+Terminal 1 (Backend — FastAPI + Python)
+───────────────────────────────────────
+Location: C:\Users\Sajiya\Downloads\uniscraper-main\uniscraper-backend
+
+First-time setup (run once):
+  cd C:\Users\Sajiya\Downloads\uniscraper-main\uniscraper-backend
+  python -m venv venv
+  .\venv\Scripts\activate
+  pip install -r requirements.txt
+  playwright install
+  copy .env.example .env
+  (Open the .env file and add your GEMINI_API_KEY, MONGODB_URI, and SERPAPI_KEY)
+
+To Run:
+  cd C:\Users\Sajiya\Downloads\uniscraper-main\uniscraper-backend
+  .\venv\Scripts\activate
+  python main.py
+
+→ The backend API will start on http://localhost:8000
+→ Interactive Swagger documentation is available at http://localhost:8000/docs
+
+
+Terminal 2 (Frontend — React + Vite)
+────────────────────────────────────
+Location: C:\Users\Sajiya\Downloads\uniscraper-main
+
+First-time setup (run once):
+  cd C:\Users\Sajiya\Downloads\uniscraper-main
+  npm install
+
+To Run:
+  cd C:\Users\Sajiya\Downloads\uniscraper-main
+  npm run dev
+
+→ The frontend will start on http://localhost:5173
+→ All API calls to /api/* are automatically proxied to the backend at localhost:8000
+
+================================================================================
+                            9. QUICK START (TL;DR)
+================================================================================
+
+┌─────────────────────────────────────────────────────────┐
+│  TERMINAL 1 (Backend)                                   │
+│                                                         │
+│  cd C:\Users\Sajiya\Downloads\uniscraper-main\          │
+│       uniscraper-backend                                │
+│  .\venv\Scripts\activate                                │
+│  python main.py                                         │
+│                                                         │
+│  → Running on http://localhost:8000                     │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│  TERMINAL 2 (Frontend)                                  │
+│                                                         │
+│  cd C:\Users\Sajiya\Downloads\uniscraper-main           │
+│  npm run dev                                            │
+│                                                         │
+│  → Running on http://localhost:5173                     │
+└─────────────────────────────────────────────────────────┘
+
+Open http://localhost:5173 in your browser to start using UniScraper!
