@@ -51,3 +51,4 @@ uniscraper-backend/.venv-py311
 uniscraper-backend/code.env
 # Installer script
 uniscraper-backend/get-pip.py
+.vercel

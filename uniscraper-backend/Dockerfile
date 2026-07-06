@@ -1,17 +1,27 @@
 FROM python:3.12-slim
 
-WORKDIR /app
+# Install Python requirements first
+COPY requirements.txt /tmp/
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-# Install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Set playwright path to a shared directory and grant permissions
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN mkdir -p /ms-playwright && chmod 777 /ms-playwright
 
-# Install playwright browsers if required
-RUN playwright install --with-deps chromium
+# Install Playwright OS dependencies and browser as root
+RUN playwright install-deps chromium && \
+    playwright install chromium
 
-COPY . .
+# Hugging Face Spaces require running as a non-root user with UID 1000
+RUN useradd -m -u 1000 user
+USER user
+ENV PATH="/home/user/.local/bin:$PATH"
 
-# Hugging Face Spaces uses port 7860 by default
+WORKDIR /home/user/app
+
+# Copy application files and change ownership
+COPY --chown=user . .
+
 ENV PORT=7860
 EXPOSE 7860
 

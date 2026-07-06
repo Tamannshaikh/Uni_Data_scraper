@@ -472,11 +472,11 @@ The project has been successfully deployed and is live! You can access the appli
 
 🌐 Frontend Website (Vercel)
    Live Link: https://uniscraper-main.vercel.app
-   Platform : Vercel (Static Site Deployment)
+   Platform : Vercel (Static Site Deployment) (waha 500MB ki limit hoti hai aur scraping backend bada hai).
 
 ⚙️ Backend API (Hugging Face)
    Live Link: https://tamanna1234-uniscraper-backend.hf.space
-   Platform : Hugging Face Spaces (Docker / FastAPI)
+   Platform : Hugging Face Spaces (Docker / FastAPI) (waha 2GB RAM & 2 vCPU free hai)
 
 📦 Source Code (GitHub)
    Repository: https://github.com/Tamannshaikh/Uni_Data_scraper
