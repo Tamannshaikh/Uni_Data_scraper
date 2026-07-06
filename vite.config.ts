@@ -16,6 +16,9 @@ export default defineConfig({
     }),
     nitro({
       preset: "vercel",
+      routeRules: {
+        '/api/v1/**': { proxy: 'https://tamanna1234-uniscraper-backend.hf.space/api/v1/**' }
+      }
     }),
     react(),
   ],
