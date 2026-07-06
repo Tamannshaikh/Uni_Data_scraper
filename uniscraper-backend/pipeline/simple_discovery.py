@@ -14,7 +14,7 @@ import httpx
 
 from config import settings
 from services.jina_search import search_and_extract_catalog_urls
-from known_catalogs import get_known_catalog_url, has_known_catalog
+from pipeline.known_catalogs import get_known_catalog_url, has_known_catalog
 
 logger = logging.getLogger(__name__)
 
