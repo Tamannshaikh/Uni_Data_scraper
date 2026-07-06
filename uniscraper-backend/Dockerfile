@@ -10,7 +10,8 @@ RUN mkdir -p /ms-playwright && chmod 777 /ms-playwright
 
 # 3. Install Playwright OS dependencies and browser as root
 RUN playwright install-deps chromium && \
-    playwright install chromium
+    playwright install chromium && \
+    chmod -R 777 /ms-playwright
 
 # 4. Hugging Face Spaces require running as a non-root user with UID 1000
 RUN useradd -m -u 1000 user
