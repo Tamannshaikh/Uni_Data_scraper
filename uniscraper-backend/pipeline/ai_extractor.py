@@ -3,8 +3,8 @@
 #
 # Hybrid extraction: regex pre-extraction → AI call → regex fallbacks.
 # Model routing (priority order):
-#   PRIMARY   — OpenRouter (google/gemini-1.5-flash)
-#   FALLBACK 1 — Gemini direct API (gemini-1.5-flash)
+#   PRIMARY   — OpenRouter (google/gemini-2.5-flash)
+#   FALLBACK 1 — Gemini direct API (gemini-2.5-flash)
 #   FALLBACK 2 — Groq Llama (fast cloud, separate quota)
 #   FALLBACK 3 — Qwen2.5:1.5b via Ollama (local, no quota)
 
@@ -53,7 +53,7 @@ _GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     "{model}:generateContent?key={api_key}"
 )
-_GEMINI_FALLBACK_MODEL = "gemini-1.5-flash"  # direct Gemini API model
+_GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"  # direct Gemini API model
 
 # ── Ollama (local fallback) ────────────────────────────────────────────────────
 _OLLAMA_URL = "http://localhost:11434/api/chat"
@@ -832,8 +832,8 @@ async def extract_fields(
         try:
             logger.info("[ai_extractor] Trying Gemini 2.5 Flash (primary)")
             print("[ai_extractor] Using Gemini 2.5 Flash")
-            raw_response = await _call_gemini(user_prompt, model="gemini-1.5-flash")
-            model_used = "gemini-1.5-flash"
+            raw_response = await _call_gemini(user_prompt, model="gemini-2.5-flash")
+            model_used = "gemini-2.5-flash"
             logger.info("[ai_extractor] Gemini extraction succeeded")
             print("[ai_extractor] Gemini extraction complete")
         except Exception as gem_err:

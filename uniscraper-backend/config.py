@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     max_concurrent_fetches: int = 12  # parallel fetch limit — increased for speed
     min_page_words: int = 30  # minimum words to keep a page
     max_pdfs: int = 2
-    llm_model: str = "google/gemini-1.5-flash"
-    openrouter_model: str = "google/gemini-1.5-flash"
+    llm_model: str = "google/gemini-2.5-flash"
+    openrouter_model: str = "google/gemini-2.5-flash"
     llm_max_tokens: int = 4000
     llm_context_limit: int = 50000  # increased to 50k chars (well within 1M token limit)
     scrape_delay_seconds: int = 7   # delay between scrapes when testing multiple URLs

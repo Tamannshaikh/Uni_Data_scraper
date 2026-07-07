@@ -142,7 +142,7 @@ Return ONLY valid JSON matching this schema (null for anything unknown):
         logger.info(f"[ai_enrichment] Asking Gemini directly for {len(missing)} missing fields")
         
         url = _GEMINI_URL.format(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             api_key=settings.gemini_api_key,
         )
         payload = {

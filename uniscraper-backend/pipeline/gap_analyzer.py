@@ -279,7 +279,7 @@ async def analyze_missing_fields_with_ai(
     # ── PRIMARY: OpenRouter ───────────────────────────────────────────────────
     if settings.openrouter_api_key:
         try:
-            or_model = getattr(settings, "openrouter_model", "google/gemini-1.5-flash")
+            or_model = getattr(settings, "openrouter_model", "google/gemini-2.5-flash")
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
                     "https://openrouter.ai/api/v1/chat/completions",
@@ -317,7 +317,7 @@ async def analyze_missing_fields_with_ai(
         async with httpx.AsyncClient(timeout=30.0) as client:
             url = (
                 "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"gemini-1.5-flash:generateContent?key={settings.gemini_api_key}"
+                f"gemini-2.5-flash:generateContent?key={settings.gemini_api_key}"
             )
             response = await client.post(
                 url,

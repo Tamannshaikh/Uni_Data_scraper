@@ -1366,7 +1366,7 @@ Pages:
 
 async def _call_openrouter_classify(candidates: list[dict]) -> list[dict]:
     """
-    Call OpenRouter (google/gemini-1.5-flash) to classify a batch of candidates.
+    Call OpenRouter (google/gemini-2.5-flash) to classify a batch of candidates.
     PRIMARY classifier — paid tier, no RPM throttling needed.
     """
     if not settings.openrouter_api_key:
@@ -1374,7 +1374,7 @@ async def _call_openrouter_classify(candidates: list[dict]) -> list[dict]:
 
     pages_json = json.dumps(candidates, indent=2)
     prompt = _CLASSIFICATION_PROMPT.format(pages_json=pages_json)
-    or_model = getattr(settings, "openrouter_model", "google/gemini-1.5-flash")
+    or_model = getattr(settings, "openrouter_model", "google/gemini-2.5-flash")
 
     for attempt in range(3):
         try:
@@ -1437,7 +1437,7 @@ async def _call_gemini_classify(
 
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-1.5-flash:generateContent?key={settings.gemini_api_key}"
+        f"gemini-2.5-flash:generateContent?key={settings.gemini_api_key}"
     )
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
