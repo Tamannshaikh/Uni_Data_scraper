@@ -475,7 +475,7 @@ The project has been successfully deployed and is live! You can access the appli
    Platform : Vercel (Static Site Deployment) (waha 500MB ki limit hoti hai aur scraping backend bada hai).
 
 ⚙️ Backend API (Hugging Face)
-   Live Link: https://tamanna1234-uniscraper-backend.hf.space
+   Live Link: https://huggingface.co/spaces/Tamanna1234/uniscraper-backend
    Platform : Hugging Face Spaces (Docker / FastAPI) (waha 2GB RAM & 2 vCPU free hai)
 
 📦 Source Code (GitHub)
