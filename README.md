@@ -1,5 +1,7 @@
 # UniScraper — University Admission Intelligence
 
+**Live Backend URL:** [https://huggingface.co/spaces/Tamanna1234/uniscraper-backend](https://huggingface.co/spaces/Tamanna1234/uniscraper-backend)
+
 A full-stack AI extraction system that scrapes university program pages and structures admission data into a clean, queryable format. Built for the AutoNova Pod internship challenge.
 
 **Features:**

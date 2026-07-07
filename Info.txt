@@ -447,7 +447,7 @@ To Run:
 │                                                         │
 │  cd C:\Users\Sajiya\Downloads\uniscraper-main\          │
 │       uniscraper-backend                                │
-│  .\venv\Scripts\activate                                │
+│  venv\Scripts\activate                                   │
 │  python main.py                                         │
 │                                                         │
 │  → Running on http://localhost:8000                     │
